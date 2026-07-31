@@ -1,0 +1,10 @@
+name: christiangeorgelucas/catalog-plan-tools
+version: 0.1.0
+language: go
+nodes:
+    - name: SearchSteps
+      input: SearchStepsInput
+      output: SearchStepsResult
+    - name: AssemblePlan
+      input: AssemblePlanInput
+      output: PlanResult

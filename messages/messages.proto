@@ -1,0 +1,148 @@
+// Data contracts for catalog-plan-tools: turn a decomposed task (a list of
+// capability queries) into ranked, scored candidate nodes from the Axiom
+// marketplace catalog, and assemble the results into a build plan with
+// explicit gaps where the catalog has no match.
+
+syntax = "proto3";
+
+package christiangeorgelucas.catalog_plan_tools;
+
+option go_package = ".;gen";
+
+// The queries to search the catalog for — one query per decomposed capability
+// step. Exactly one of queries / queries_json / query should be provided;
+// precedence is queries > queries_json > query. queries_json exists so an
+// upstream LLM's raw text can be passed without fragile flow-level parsing.
+message SearchStepsInput {
+  // One catalog query per step, e.g. ["validate IBAN checksum", "look up bank by IBAN"]. Highest precedence.
+  repeated string queries = 1;
+  // Raw JSON (or LLM text containing JSON) holding the queries. Parsed defensively: code fences are
+  // stripped, and the first JSON structure found is accepted as ["q1","q2"], [{"query":...}],
+  // [{"description":...}], {"steps":[...]}, or {"queries":[...]}. Used only when queries is empty.
+  string queries_json = 2;
+  // A single query — used only when both queries and queries_json are empty. Lets a caller run the
+  // whole task description as one search (the planner flow's no-LLM fallback branch does this).
+  string query = 3;
+  // Max candidates returned per step. 0 means the default of 5.
+  int32 limit = 4;
+}
+
+// One candidate node from the catalog, with a locally computed relevance score.
+message Candidate {
+  // The node's name, e.g. "ValidateIban".
+  string node = 1;
+  // The fully qualified package, e.g. "christiangeorgelucas/iban-tools".
+  string package = 2;
+  // The package version this node was found at.
+  string version = 3;
+  // The node's published description (may be empty if the package author omitted one).
+  string description = 4;
+  // Locally computed relevance in [0,1]: the fraction of the query's informative words (stopwords
+  // dropped, node names split on case) found in this candidate's name + package + description.
+  // This is a lexical measure computed by this node, NOT a platform ranking signal — the platform's
+  // search API returns no thresholdable score today. 1.0 means every informative query word matched.
+  double score = 5;
+}
+
+// The candidates found for one step's query.
+message StepCandidates {
+  // The query this step searched for, echoed verbatim.
+  string query = 1;
+  // Ranked candidates, best first, capped at the requested limit. Empty means the catalog returned
+  // nothing for the query or any of its relaxed keyword variants — a genuine "no match" signal.
+  repeated Candidate candidates = 2;
+  // True when the full-phrase search returned nothing and these candidates came from relaxed
+  // per-keyword searches instead — treat them with more skepticism than a phrase hit.
+  bool relaxed = 3;
+  // Non-empty when the search API could not be reached for this query (transport/HTTP failure).
+  // An unreachable search is NOT a "no match": candidates is empty but nothing was actually ruled out.
+  string error = 4;
+}
+
+// Per-step search results, in input order.
+message SearchStepsResult {
+  // One entry per input query, in the same order as the input.
+  repeated StepCandidates steps = 1;
+  // Number of entries in steps. Present even when zero-valued fields are omitted from JSON.
+  int32 step_count = 2;
+  // Which input field drove the search: "queries", "queries_json", or "query". Empty on input error.
+  string source = 3;
+  // Empty on success. "NO_QUERY" when no usable query was provided (including unparseable
+  // queries_json — the parse detail follows after a colon). "ALL_QUERIES_FAILED" when every
+  // per-step search hit a transport error (see each step's error field for detail).
+  string error = 4;
+}
+
+// Everything AssemblePlan needs: the primary (LLM-decomposed) search results, the fallback
+// (whole-description) results, and the upstream LLM's error state for honest attribution.
+message AssemblePlanInput {
+  // Search results for the LLM-decomposed steps. May be empty when decomposition failed.
+  repeated StepCandidates primary = 1;
+  // Search results for the whole task description as a single query — the degraded plan used
+  // when primary is empty.
+  repeated StepCandidates fallback = 2;
+  // The upstream LLM's error field, forwarded verbatim ("" when the LLM branch succeeded).
+  // Surfaces in PlanResult.error as "decompose: <detail>" when the plan fell back.
+  string llm_error = 3;
+  // Minimum candidate score to count a step as matched. 0 means the default of 0.45.
+  double threshold = 4;
+  // Max runner-up node refs per step in alternatives. 0 means the default of 3.
+  int32 max_alternatives = 5;
+}
+
+// One step of the assembled plan: the capability, whether the catalog covers it, and with what.
+message PlanStep {
+  // The step's capability query, echoed from the search results.
+  string description = 1;
+  // True when the best candidate's score cleared the threshold. False for both "no candidates at
+  // all" and "candidates all below threshold" — score and node distinguish those.
+  bool matched = 2;
+  // Best-pick node name ("" when unmatched).
+  string node = 3;
+  // Best-pick fully qualified package ("" when unmatched).
+  string package = 4;
+  // Best-pick package version ("" when unmatched).
+  string version = 5;
+  // The best candidate's score, reported even when it fell below the threshold (0 when the step
+  // had no candidates at all).
+  double score = 6;
+  // The best-pick node's published description ("" when unmatched).
+  string node_description = 7;
+  // Runner-up refs as "package/Node@version", best first, for callers that prefer a different pick.
+  repeated string alternatives = 8;
+}
+
+// A step the catalog cannot cover — the "what to build" output.
+message Gap {
+  // The uncovered capability, echoed from the step's query.
+  string description = 1;
+  // A deterministic suggestion for closing the gap (a candidate package shape to propose).
+  string proposal_hint = 2;
+}
+
+// The assembled build plan.
+message PlanResult {
+  // True only when a plan basis exists AND every step in it matched. Always read plan_basis
+  // alongside this: false with basis "none" means "nothing to plan from", not "steps unmatched".
+  bool feasible = 1;
+  // Explicit sentinel for which inputs produced the plan: "decomposed" (primary results),
+  // "fallback" (whole-description results, because primary was empty), or "none" (both empty).
+  // Never empty — this field is set on every path so an absent feasible=false is never ambiguous.
+  string plan_basis = 2;
+  // Steps whose best candidate cleared the threshold.
+  int32 matched_count = 3;
+  // Total steps in the plan basis.
+  int32 step_count = 4;
+  // matched_count / step_count in [0,1] (0 when step_count is 0). Callers wanting looser
+  // feasibility than all-steps-matched (e.g. >= 0.6 coverage) read this.
+  double coverage = 5;
+  // The per-step picks, in step order.
+  repeated PlanStep steps = 6;
+  // One entry per unmatched step: what the catalog is missing.
+  repeated Gap gaps = 7;
+  // Empty on a fully clean call. "decompose: <detail>" when the LLM branch failed and the plan
+  // fell back (the plan itself is still valid, just single-step); "search: <detail>" when a
+  // step's search transport-failed (that step is NOT counted as a gap — nothing was ruled out);
+  // "NO_INPUT" when there was nothing to assemble from.
+  string error = 8;
+}
