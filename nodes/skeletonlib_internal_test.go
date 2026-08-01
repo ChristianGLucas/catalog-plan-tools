@@ -89,7 +89,7 @@ message POut { string download_url = 1; string body = 2; }
 		"message_name: FetchAReleasePageInput",
 		"description: 'The release to resolve.'",
 		"- alias: resolve",
-		"package: h/dl-tools@1.0.0",
+		"package: 'h/dl-tools@1.0.0'",
 		"- alias: fetch_page",
 		"from: '@flow_input'",
 		"q: q",
@@ -212,6 +212,77 @@ func TestRenderSkeleton_UnresolvedFirstPick(t *testing.T) {
 		t.Errorf("no wireable edges must render as edges: []:\n%s", y)
 	}
 	assertYAMLFlow(t, y, 1, 0)
+}
+
+// R16 CRITICAL: C0/DEL control runes outside Go's \s class (e.g. \x0B, \x00,
+// \x1B, \x7F) reached the emitted YAML through task text, proto descriptions,
+// and fabricated pick names, and YAML parsers reject control characters
+// outright — breaking the public "every emitted skeleton validates" claim.
+// collapse() must drop them everywhere.
+func TestRenderSkeleton_ControlCharactersStripped(t *testing.T) {
+	if got := collapse("a\x0bb\x00c\x7fd\x1be \tf"); got != "abcde f" {
+		t.Fatalf("collapse must drop control runes, got %q", got)
+	}
+	steps := []*gen.PlanStep{
+		step("desc with \x0b control", "FetchPage", "h/fetch\x1b-tools", "1.0.0", true),
+		step("gap \x00 step", "", "", "", false),
+	}
+	ports := map[string]*nodePorts{
+		"h/fetch\x1b-tools/FetchPage@1.0.0": mkPorts(t, skConsumerProto, "CIn", "COut", "h/fetch\x1b-tools/FetchPage@1.0.0"),
+	}
+	y := renderSkeleton("task \x0b with \x7f controls", steps, nil, ports)
+	for _, r := range y {
+		if (r < 0x20 && r != '\n') || r == 0x7F {
+			t.Fatalf("control rune %q leaked into skeleton:\n%s", r, y)
+		}
+	}
+	assertYAMLFlow(t, y, 1, 1)
+	if !strings.Contains(y, "package: 'h/fetch-tools@1.0.0'") {
+		t.Errorf("fabricated pick name must be control-stripped and quoted:\n%s", y)
+	}
+}
+
+// R16 MAJOR: a proposed pairing must never connect two fields the carrier
+// taxonomy has already labeled as DIFFERENT semantic types (the first live
+// plan wired iban: bic). One-side-labeled and both-unlabeled stay eligible.
+// R16 MINOR: repeated scalar leaves are not plain-pickable either.
+func TestProposePairing_CarrierDisjointAndRepeatedExcluded(t *testing.T) {
+	cons := mkPorts(t, `
+message CIn {
+  // The IBAN to check.
+  string iban = 1;
+}
+message COut { string r = 1; }
+`, "CIn", "COut", "h/p/C@1")
+
+	// Producer offers a BIC (labeled, disjoint from iban) and an unlabeled
+	// string: the unlabeled one must win despite the BIC path being shorter.
+	mixed := mkPorts(t, `
+message POut { string bic = 1; string note = 2; }
+message PIn { string q = 1; }
+`, "PIn", "POut", "h/p/A@1")
+	outPath, inField, ok := proposePairing(mixed, cons)
+	if !ok || outPath != "note" || inField != "iban" {
+		t.Errorf("expected note->iban (unlabeled producer side), got %q->%q ok=%v", outPath, inField, ok)
+	}
+
+	// Producer offers ONLY the disjoint-labeled BIC: no proposal at all.
+	biconly := mkPorts(t, `
+message POut { string bic = 1; }
+message PIn { string q = 1; }
+`, "PIn", "POut", "h/p/B@1")
+	if _, _, ok := proposePairing(biconly, cons); ok {
+		t.Error("bic->iban must not be proposed (both labeled, disjoint carriers)")
+	}
+
+	// Producer offers only a repeated scalar (beyond error): no proposal.
+	reponly := mkPorts(t, `
+message POut { repeated string tags = 1; string error = 2; }
+message PIn { string q = 1; }
+`, "PIn", "POut", "h/p/D@1")
+	if _, _, ok := proposePairing(reponly, cons); ok {
+		t.Error("repeated scalar leaf must not be proposed as a plain pick")
+	}
 }
 
 // assertYAMLFlow parses the skeleton as YAML and checks the structural core.

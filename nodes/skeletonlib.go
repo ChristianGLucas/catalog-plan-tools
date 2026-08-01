@@ -57,10 +57,21 @@ func yq(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-// collapse folds all whitespace runs (incl. newlines) into single spaces so
-// task text and proto comments stay on one YAML line.
+// collapse folds all whitespace runs (incl. newlines) into single spaces and
+// DROPS every other control rune (C0 and DEL) so task text and proto comments
+// stay on one YAML line that a YAML parser will accept. Go's \s covers only
+// {\t \n \f \r space}; bytes like \x0B or \x1B would otherwise pass straight
+// into the emitted document and fail `axiom flow validate` with "control
+// characters are not allowed" (R16 review CRITICAL).
 func collapse(s string) string {
-	return strings.TrimSpace(wsRe.ReplaceAllString(s, " "))
+	s = wsRe.ReplaceAllString(s, " ")
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7F {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
 }
 
 // aliasFor derives a unique snake_case node alias from a node name.
@@ -114,25 +125,41 @@ func parseVia(via string) (carrier, outPath, inField string, ok bool) {
 // proposePairing picks a deterministic type-compatible (output leaf, input
 // field) pairing for a pair with no carrier evidence: the shortest adapter-
 // pickable producer path (ties broken lexicographically) against the first
-// compatible consumer field in declared order. Paths through repeated
-// messages ("[]") and the bare "error" leaf are excluded — neither is a
-// sensible plain edge pick.
+// eligible consumer field in declared order. Excluded outright: paths through
+// repeated messages ("[]"), repeated scalar leaves, the bare "error" leaf —
+// none is a sensible plain edge pick — and any pairing whose two sides carry
+// non-empty but DISJOINT carrier sets: those fields are already classified as
+// different semantic types (a BIC is not an IBAN), so proposing them would
+// contradict the taxonomy this same package used for the verdict (R16 review
+// MAJOR — the first live plan wired iban: bic under the TODO marker).
 func proposePairing(from, to *nodePorts) (outPath, inField string, ok bool) {
 	for _, ol := range from.outLeafs {
-		if ol.path == "error" || strings.Contains(ol.path, "[]") {
+		if ol.path == "error" || ol.repeated || strings.Contains(ol.path, "[]") {
 			continue
 		}
 		for _, inf := range to.inFields {
 			if !jtypesCompatible(ol.jtype, inf.jtype) {
 				continue
 			}
+			if len(ol.carriers) > 0 && len(inf.carriers) > 0 && !carriersOverlap(ol.carriers, inf.carriers) {
+				continue // both labeled, differently — actively wrong, keep looking
+			}
 			if !ok || len(ol.path) < len(outPath) || (len(ol.path) == len(outPath) && ol.path < outPath) {
 				outPath, inField, ok = ol.path, inf.path, true
 			}
-			break // first compatible consumer field in declared order
+			break // first eligible consumer field in declared order
 		}
 	}
 	return outPath, inField, ok
+}
+
+func carriersOverlap(a, b []string) bool {
+	for _, c := range a {
+		if contains(b, c) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderSkeleton renders the draft flow.yaml. steps is the full plan (matched
@@ -141,10 +168,11 @@ func proposePairing(from, to *nodePorts) (outPath, inField string, ok bool) {
 // when no step matched.
 func renderSkeleton(task string, steps []*gen.PlanStep, bridges []*gen.BridgeCheck, ports map[string]*nodePorts) string {
 	type pick struct {
-		step    *gen.PlanStep
-		stepIdx int
-		alias   string
-		ref     string
+		step           *gen.PlanStep
+		stepIdx        int
+		alias          string
+		ref            string
+		pkg, node, ver string // control-stripped copies for YAML emission
 	}
 	var picks []pick
 	used := map[string]int{}
@@ -152,11 +180,18 @@ func renderSkeleton(task string, steps []*gen.PlanStep, bridges []*gen.BridgeChe
 		if s == nil || !s.Matched {
 			continue
 		}
-		picks = append(picks, pick{
+		p := pick{
 			step: s, stepIdx: i,
 			alias: aliasFor(s.Node, used),
-			ref:   s.Package + "/" + s.Node + "@" + s.Version,
-		})
+			// The ref keys the ports map, so it uses the RAW values; the
+			// emission copies are collapse()d so a fabricated pick (direct
+			// CheckBridges invoke) cannot smuggle control bytes into the YAML.
+			ref:  s.Package + "/" + s.Node + "@" + s.Version,
+			pkg:  collapse(s.Package),
+			node: collapse(s.Node),
+			ver:  collapse(s.Version),
+		}
+		picks = append(picks, p)
 	}
 	if len(picks) == 0 {
 		return ""
@@ -190,11 +225,12 @@ func renderSkeleton(task string, steps []*gen.PlanStep, bridges []*gen.BridgeChe
 	// --- input facade: mirror the first pick's published input fields ---
 	first := picks[0]
 	firstPorts := ports[first.ref]
+	firstRefClean := first.pkg + "/" + first.node + "@" + first.ver
 	haveFacade := firstPorts != nil && firstPorts.err == "" && len(firstPorts.inFields) > 0
 	if haveFacade {
 		w("input_facade:")
 		w("    message_name: %sInput", pascal(slug))
-		w("    description: %s", yq("Caller inputs, mirrored from "+first.ref+"'s input message — rename, trim, and re-describe as the flow's own contract."))
+		w("    description: %s", yq("Caller inputs, mirrored from "+firstRefClean+"'s input message — rename, trim, and re-describe as the flow's own contract."))
 		w("    fields:")
 		for _, f := range firstPorts.inFields {
 			w("        %s:", f.path)
@@ -209,8 +245,8 @@ func renderSkeleton(task string, steps []*gen.PlanStep, bridges []*gen.BridgeChe
 			w("            description: %s", yq(desc))
 		}
 	} else {
-		w("# TODO(planner): %s's input schema could not be mirrored (%s) — declare the", first.ref, portsProblem(firstPorts))
-		w("# input_facade (and the '@flow_input' edge below) by hand from `axiom inspect node %s/%s`.", first.step.Package, first.step.Node)
+		w("# TODO(planner): %s's input schema could not be mirrored (%s) — declare the", firstRefClean, portsProblem(firstPorts))
+		w("# input_facade (and the '@flow_input' edge below) by hand from `axiom inspect node %s/%s`.", first.pkg, first.node)
 	}
 
 	// --- per-pair wiring decisions. A flow must validate with exactly one
@@ -299,8 +335,8 @@ func renderSkeleton(task string, steps []*gen.PlanStep, bridges []*gen.BridgeChe
 			pfx, ppfx = "    # ", "    #   "
 		}
 		w("%s- alias: %s", pfx, picks[pi].alias)
-		w("%spackage: %s@%s", ppfx, s.Package, s.Version)
-		w("%snode: %s", ppfx, s.Node)
+		w("%spackage: %s", ppfx, yq(picks[pi].pkg+"@"+picks[pi].ver))
+		w("%snode: %s", ppfx, yq(picks[pi].node))
 		w("%scol: %d", ppfx, pi)
 		w("%srow: 0", ppfx)
 		pi++
