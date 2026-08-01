@@ -47,6 +47,43 @@ var stopwords = map[string]bool{
 	"those": true, "please": true, "would": true, "could": true,
 }
 
+// genericTokens are real words that survive the stopword filter but describe
+// data SHAPE or glue rather than a domain ("details", "code", "value"). They
+// still count toward a match, but at reduced weight, so a candidate can no
+// longer clear the 0.45 threshold on generic-word overlap alone — the defect
+// class found live in v0, where "lookup bank details by code" matched a
+// pharmaceutical packaging node at 0.67 purely on "details"+"code". Keys are
+// the SINGULAR forms (tokenize strips a plural "s" before lookup).
+var genericTokens = map[string]bool{
+	"detail": true, "code": true, "data": true, "info": true,
+	"information": true, "value": true, "item": true, "record": true,
+	"entry": true, "list": true, "text": true, "number": true,
+	"id": true, "identifier": true, "name": true, "key": true,
+	"field": true, "file": true, "format": true, "type": true,
+	"result": true, "statu": true /* "status" post-singular */, "content": true,
+	"object": true, "element": true, "source": true, "target": true,
+	"input": true, "output": true, "level": true, "mode": true,
+	"option": true, "part": true, "section": true, "set": true,
+	"service": true, "tool": true, "api": true, "web": true,
+	"online": true, "user": true, "based": true, "raw": true,
+	"plain": true, "simple": true, "common": true, "standard": true,
+	"custom": true, "general": true, "specific": true, "single": true,
+	"multiple": true, "current": true, "new": true, "full": true,
+}
+
+// genericWeight is what a generic token contributes relative to a
+// domain-specific token's 1.0. Calibrated so a query like "bank details code"
+// scores 0.7/1.7 ≈ 0.41 (< 0.45) when ONLY the generic words match, while a
+// two-token query with its one specific word matched scores 1/1.35 ≈ 0.74.
+const genericWeight = 0.35
+
+func tokenWeight(t string) float64 {
+	if genericTokens[t] {
+		return genericWeight
+	}
+	return 1.0
+}
+
 // camelBoundary inserts spaces at lowercase→uppercase boundaries so node names
 // like "ValidateIban" tokenize as ["validate","iban"].
 func camelBoundary(s string) string {
@@ -126,9 +163,13 @@ func searchNodes(ctx context.Context, query string) ([]apiNode, error) {
 	return nodes, nil
 }
 
-// scoreCandidate returns the fraction of the query's informative tokens found
-// in the candidate's name + package + description. 1.0 = every informative
-// query word matched; 0.0 = none did.
+// scoreCandidate returns the WEIGHTED fraction of the query's informative
+// tokens found in the candidate's name + package + description: 1.0 = every
+// informative query word matched, 0.0 = none did. Domain-specific tokens
+// carry weight 1.0 and generic data-shape tokens genericWeight, so a
+// candidate that shares only generic words with the query ("details","code")
+// cannot clear the 0.45 match threshold, while missing only a generic word
+// barely dents the score.
 func scoreCandidate(queryToks []string, n apiNode) float64 {
 	if len(queryToks) == 0 {
 		return 0
@@ -137,13 +178,18 @@ func scoreCandidate(queryToks []string, n apiNode) float64 {
 	for _, t := range tokenize(n.NodeName + " " + n.PackageName + " " + n.Description) {
 		candToks[t] = true
 	}
-	hit := 0
+	var hit, total float64
 	for _, qt := range queryToks {
+		w := tokenWeight(qt)
+		total += w
 		if candToks[qt] {
-			hit++
+			hit += w
 		}
 	}
-	return float64(hit) / float64(len(queryToks))
+	if total == 0 {
+		return 0
+	}
+	return hit / total
 }
 
 // searchOneQuery runs the full-phrase search, relaxes to per-keyword searches

@@ -9,7 +9,7 @@ import (
 	gen "christiangeorgelucas/catalog-plan-tools/gen"
 )
 
-// AssemblePlan turns per-step catalog search results into a build plan: for each step it picks the best-scoring candidate node, marks the step matched when that score clears the threshold (default 0.45), lists runner-up alternatives, and emits an explicit gap ("what to build") for every step the catalog cannot cover. Prefers the primary (LLM-decomposed) results and falls back to the whole-description results when primary is empty, attributing the degradation in the error field ("decompose: ..."). A step whose search transport-failed is reported in error ("search: ...") and counted as unmatched but NOT as a gap — an unreachable search rules nothing out. plan_basis is always set ("decomposed" / "fallback" / "none") so a false feasible verdict is never ambiguous. Pure function of its input — no network, no secrets.
+// AssemblePlan turns per-step catalog search results into a build plan: for each step it picks the best-scoring candidate node, marks the step matched when that score clears the threshold (default 0.45), lists runner-up alternatives, and emits an explicit gap ("what to build") for every step the catalog cannot cover. Prefers the primary (LLM-decomposed) results and falls back to the whole-description results when primary is empty, attributing the degradation in the error field ("decompose: ..."). A step whose search transport-failed is reported in error ("search: ...") and counted as unmatched but NOT as a gap — an unreachable search rules nothing out. plan_basis is always set ("decomposed" / "fallback" / "none") so a false feasible verdict is never ambiguous, and bridge_status is always "unchecked" — feed this result to CheckBridges to add per-pair type-bridge verdicts. Pure function of its input — no network, no secrets.
 func AssemblePlan(ctx context.Context, ax axiom.Context, input *gen.AssemblePlanInput) (*gen.PlanResult, error) {
 	threshold := input.Threshold
 	if threshold <= 0 {
@@ -21,7 +21,7 @@ func AssemblePlan(ctx context.Context, ax axiom.Context, input *gen.AssemblePlan
 	}
 
 	if input.TaskBlank {
-		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT"}, nil
+		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT", BridgeStatus: "unchecked"}, nil
 	}
 	basisSteps := input.Primary
 	basis := "decomposed"
@@ -30,7 +30,7 @@ func AssemblePlan(ctx context.Context, ax axiom.Context, input *gen.AssemblePlan
 		basis = "fallback"
 	}
 	if len(basisSteps) == 0 {
-		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT"}, nil
+		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT", BridgeStatus: "unchecked"}, nil
 	}
 
 	var errParts []string
@@ -42,7 +42,7 @@ func AssemblePlan(ctx context.Context, ax axiom.Context, input *gen.AssemblePlan
 		}
 	}
 
-	result := &gen.PlanResult{PlanBasis: basis, StepCount: int32(len(basisSteps))}
+	result := &gen.PlanResult{PlanBasis: basis, StepCount: int32(len(basisSteps)), BridgeStatus: "unchecked"}
 	matched := 0
 	for _, sc := range basisSteps {
 		ps := &gen.PlanStep{Description: sc.Query}

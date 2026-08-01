@@ -1,5 +1,5 @@
 name: christiangeorgelucas/catalog-plan-tools
-version: 0.1.2
+version: 0.2.0
 language: go
 nodes:
     - name: SearchSteps
@@ -7,4 +7,7 @@ nodes:
       output: SearchStepsResult
     - name: AssemblePlan
       input: AssemblePlanInput
+      output: PlanResult
+    - name: CheckBridges
+      input: CheckBridgesInput
       output: PlanResult

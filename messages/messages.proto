@@ -37,10 +37,14 @@ message Candidate {
   string version = 3;
   // The node's published description (may be empty if the package author omitted one).
   string description = 4;
-  // Locally computed relevance in [0,1]: the fraction of the query's informative words (stopwords
-  // dropped, node names split on case) found in this candidate's name + package + description.
-  // This is a lexical measure computed by this node, NOT a platform ranking signal — the platform's
-  // search API returns no thresholdable score today. 1.0 means every informative query word matched.
+  // Locally computed relevance in [0,1]: the weighted fraction of the query's informative words
+  // (stopwords dropped, node names split on case) found in this candidate's name + package +
+  // description. Domain-specific words ("iban", "checksum") carry full weight; generic
+  // data-shape words ("details", "code", "value") carry a reduced weight, so a candidate cannot
+  // clear the match threshold on generic-word overlap alone — a wrong-domain node sharing only
+  // words like "details"+"code" with the query now scores below 0.45. This is a lexical measure
+  // computed by this node, NOT a platform ranking signal — the platform's search API returns no
+  // thresholdable score today. 1.0 still means every informative query word matched.
   double score = 5;
 }
 
@@ -129,10 +133,68 @@ message Gap {
   string proposal_hint = 2;
 }
 
+// One type-bridge verdict between the picks of two adjacent matched plan steps, computed from the
+// nodes' published proto schemas (fetched from the public registry at check time). The check is
+// deliberately asymmetric in confidence: a "bridged" verdict is strong positive evidence (a shared
+// typed carrier like a URL, IBAN, or timestamp connects an output leaf to a top-level input), but
+// the carrier taxonomy ignores freeform strings on purpose, so the ABSENCE of a carrier match is
+// weak evidence — many legitimate flows bridge via plain string fields. "blocked" is therefore
+// reserved for structural impossibility, not mere lack of carrier evidence.
+message BridgeCheck {
+  // The producing step's pick as "package/Node@version".
+  string from_node = 1;
+  // The consuming step's pick as "package/Node@version".
+  string to_node = 2;
+  // Never empty. "bridged": a shared typed carrier connects an output leaf of from_node to a
+  // top-level scalar input of to_node (see via). "plausible": no shared carrier, but the producer
+  // emits at least one scalar leaf of a type the consumer accepts on a top-level field — nothing
+  // rules the edge out, verify the field pairing manually. "blocked": structurally impossible for
+  // an edge adapter — the consumer exposes no top-level scalar (or repeated-scalar) input a foreign
+  // producer can feed, or the producer's output leaf types and the consumer's accepted types are
+  // disjoint (see detail). "unknown": the schemas could not be fetched or parsed (see detail) —
+  // nothing was verified either way.
+  string verdict = 3;
+  // True only for verdict "bridged" — carrier-evidenced compatibility. A "plausible" pair is
+  // deliberately false here so callers gating on compatible get only the strong claims.
+  bool compatible = 4;
+  // For "bridged": the strongest carrier pairing as "<carrier>: <output path> -> <input field>",
+  // e.g. "url: release.download_url -> target_url". Empty otherwise.
+  string via = 5;
+  // Human-readable explanation of the verdict (why blocked, what failed for unknown, what type
+  // overlap exists for plausible). Empty only when via says it all.
+  string detail = 6;
+}
+
+// Everything CheckBridges needs: the assembled plan, passed field-for-field from AssemblePlan's
+// PlanResult (the flow edge maps each field 1:1). CheckBridges re-emits the same plan with
+// bridges populated, bridge_status set, and feasible re-derived as matched-AND-not-blocked.
+message CheckBridgesInput {
+  // PlanResult.feasible from the assemble step.
+  bool feasible = 1;
+  // PlanResult.plan_basis from the assemble step ("decomposed" / "fallback" / "none").
+  string plan_basis = 2;
+  // PlanResult.matched_count from the assemble step.
+  int32 matched_count = 3;
+  // PlanResult.step_count from the assemble step.
+  int32 step_count = 4;
+  // PlanResult.coverage from the assemble step.
+  double coverage = 5;
+  // PlanResult.steps from the assemble step.
+  repeated PlanStep steps = 6;
+  // PlanResult.gaps from the assemble step.
+  repeated Gap gaps = 7;
+  // PlanResult.error from the assemble step, carried through verbatim (bridge-stage errors are
+  // appended after it).
+  string error = 8;
+}
+
 // The assembled build plan.
 message PlanResult {
-  // True only when a plan basis exists AND every step in it matched. Always read plan_basis
-  // alongside this: false with basis "none" means "nothing to plan from", not "steps unmatched".
+  // True only when a plan basis exists AND every step in it matched AND (once CheckBridges has
+  // run — see bridge_status) no adjacent pair of picks is structurally blocked. A "plausible" or
+  // "unknown" bridge verdict does NOT clear feasible to false: the carrier taxonomy's silence is
+  // weak evidence, and an unreachable registry proves nothing. Always read plan_basis alongside
+  // this: false with basis "none" means "nothing to plan from", not "steps unmatched".
   bool feasible = 1;
   // Explicit sentinel for which inputs produced the plan: "decomposed" (primary results),
   // "fallback" (whole-description results, because primary was empty), or "none" (both empty).
@@ -152,6 +214,19 @@ message PlanResult {
   // Empty on a fully clean call. "decompose: <detail>" when the LLM branch failed and the plan
   // fell back (the plan itself is still valid, just single-step); "search: <detail>" when a
   // step's search transport-failed (that step is NOT counted as a gap — nothing was ruled out);
-  // "NO_INPUT" when there was nothing to assemble from.
+  // "NO_INPUT" when there was nothing to assemble from. CheckBridges appends "bridge: <detail>"
+  // entries for pairs it could not verify (verdict "unknown") or found blocked.
   string error = 8;
+  // One verdict per adjacent pair of MATCHED steps, in step order (a pair separated by an
+  // unmatched step is not checked — the missing node's types are unknown). Empty from
+  // AssemblePlan (bridge_status "unchecked"), and empty from CheckBridges when the plan has
+  // fewer than two adjacent matched steps (bridge_status "no_pairs").
+  repeated BridgeCheck bridges = 9;
+  // Never empty once set by this package's nodes. "unchecked": AssemblePlan output — no bridge
+  // analysis ran (v0-compatible). From CheckBridges: "no_pairs" (fewer than two adjacent matched
+  // steps — nothing to check), "bridged" (every checked pair carrier-bridged), "plausible" (no
+  // pair blocked, at least one only type-plausible), "blocked" (at least one pair structurally
+  // blocked — feasible is forced false), "unknown" (at least one pair unverifiable and none
+  // blocked). Older v0 PlanResults predate this field and omit it entirely.
+  string bridge_status = 10;
 }
