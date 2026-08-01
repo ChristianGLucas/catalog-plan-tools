@@ -142,15 +142,23 @@ func TestAssembleFromCells_NoUsableCellsIsNoInputWithLLMAttribution(t *testing.T
 // yields the same NO_INPUT verdict the sync planner gives, even if cells
 // somehow carried results.
 func TestAssembleFromCells_BlankTaskForcesNoInput(t *testing.T) {
+	// The realistic shape: PlanFanOut refused, so the plan carried no queries
+	// and the authored cell reports NO_QUERY. Those clauses are CONSEQUENCES
+	// of the blank task and must not dilute the verdict — live-reproduced
+	// against the sync planner, which emits a bare NO_INPUT.
 	got, err := nodes.AssembleFromCells(context.Background(), newTestContext(t), &gen.FanInInput{
-		Cells:     []*gen.CellResult{fanCell(0, "invented step", cand("ParseVCard", "h/vcard-tools", "0.1.0", 1.0))},
+		Cells: []*gen.CellResult{
+			{Row: 0, Col: 3, Error: "NO_QUERY: the plan carried no queries"},
+			fanCell(1, "invented step", cand("ParseVCard", "h/vcard-tools", "0.1.0", 1.0)),
+		},
+		LlmError:  "anthropic: 529 overloaded",
 		TaskBlank: true,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.PlanBasis != "none" || got.Error != "NO_INPUT" || got.Feasible || len(got.Steps) != 0 {
-		t.Fatalf("a blank task must yield NO_INPUT with no steps: %+v", got)
+		t.Fatalf("a blank task must yield a bare NO_INPUT with no steps: %+v", got)
 	}
 
 	// Same input, sync path: the two must agree.

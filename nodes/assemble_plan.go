@@ -56,6 +56,16 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 		maxAlt = 3
 	}
 
+	// A blank task is refused before anything else is weighed, and its
+	// attribution is the bare NO_INPUT — every other clause a fan-out could
+	// raise here (a cell reporting the plan carried no queries, a failed
+	// decomposition of nothing) is a CONSEQUENCE of the blank task, not
+	// independent information. Keeping this verdict bare is also what makes
+	// it identical to the batch planner's.
+	if p.taskBlank {
+		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT", BridgeStatus: "unchecked"}
+	}
+
 	errParts := append([]string{}, p.leadingErrors...)
 	if p.attributeLLMError && strings.TrimSpace(p.llmError) != "" {
 		errParts = append(errParts, "decompose: "+p.llmError)
@@ -66,10 +76,6 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 			Error:        strings.Join(append(errParts, "NO_INPUT"), "; "),
 			BridgeStatus: "unchecked",
 		}
-	}
-
-	if p.taskBlank {
-		return noInput()
 	}
 	basisSteps := p.primary
 	basis := "decomposed"
