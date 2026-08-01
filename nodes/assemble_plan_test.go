@@ -224,3 +224,42 @@ func TestAssemblePlan_ThresholdOverride(t *testing.T) {
 		t.Fatal("0.5 must not clear an explicit threshold of 0.6")
 	}
 }
+
+func TestAssemblePlan_StepErrorFieldCarriesTransportFailure(t *testing.T) {
+	got, err := nodes.AssemblePlan(context.Background(), newTestContext(t), &gen.AssemblePlanInput{
+		Primary: []*gen.StepCandidates{
+			{Query: "ok step", Candidates: []*gen.Candidate{cand("N", "h/p", "1", 0.9)}},
+			{Query: "down step", Error: "search: HTTP 503: upstream"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Steps[0].Error != "" {
+		t.Errorf("clean step must have empty error, got %q", got.Steps[0].Error)
+	}
+	if got.Steps[1].Error != "search: HTTP 503: upstream" {
+		t.Errorf("failed step must carry its own error, got %q", got.Steps[1].Error)
+	}
+}
+
+func TestAssemblePlan_NegativeKnobsFallToDefaults(t *testing.T) {
+	cands := []*gen.Candidate{
+		cand("A", "h/p", "1", 1.0), cand("B", "h/p", "1", 0.9), cand("C", "h/p", "1", 0.8),
+		cand("D", "h/p", "1", 0.7), cand("E", "h/p", "1", 0.6),
+	}
+	got, err := nodes.AssemblePlan(context.Background(), newTestContext(t), &gen.AssemblePlanInput{
+		Primary:         []*gen.StepCandidates{{Query: "q", Candidates: cands}},
+		Threshold:       -1,
+		MaxAlternatives: -3,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.Steps[0].Matched {
+		t.Fatal("negative threshold must fall to 0.45; 1.0 clears it")
+	}
+	if len(got.Steps[0].Alternatives) != 3 {
+		t.Fatalf("negative max_alternatives must fall to 3, got %d", len(got.Steps[0].Alternatives))
+	}
+}

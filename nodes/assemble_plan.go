@@ -44,6 +44,7 @@ func AssemblePlan(ctx context.Context, ax axiom.Context, input *gen.AssemblePlan
 	for _, sc := range basisSteps {
 		ps := &gen.PlanStep{Description: sc.Query}
 		if sc.Error != "" {
+			ps.Error = sc.Error
 			errParts = append(errParts, fmt.Sprintf("search: %s: %s", sc.Query, sc.Error))
 			result.Steps = append(result.Steps, ps)
 			continue

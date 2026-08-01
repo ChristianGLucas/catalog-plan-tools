@@ -110,6 +110,9 @@ message PlanStep {
   string node_description = 7;
   // Runner-up refs as "package/Node@version", best first, for callers that prefer a different pick.
   repeated string alternatives = 8;
+  // Non-empty when this step's catalog search transport-failed (copied from the search result).
+  // Such a step is unmatched but NOT a gap — nothing was ruled out. Empty otherwise.
+  string error = 9;
 }
 
 // A step the catalog cannot cover — the "what to build" output.

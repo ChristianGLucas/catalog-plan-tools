@@ -51,13 +51,19 @@ func SearchSteps(ctx context.Context, ax axiom.Context, input *gen.SearchStepsIn
 	return result, nil
 }
 
-// nonBlank filters a query list to its trimmed, non-empty entries.
+// nonBlank filters a query list to its trimmed, non-empty entries, deduped
+// case-insensitively — the same normalization queriesFromValue applies to the
+// queries_json path, so both input paths behave identically.
 func nonBlank(qs []string) []string {
 	var out []string
+	seen := make(map[string]bool)
 	for _, q := range qs {
-		if t := strings.TrimSpace(q); t != "" {
-			out = append(out, t)
+		t := strings.TrimSpace(q)
+		if t == "" || seen[strings.ToLower(t)] {
+			continue
 		}
+		seen[strings.ToLower(t)] = true
+		out = append(out, t)
 	}
 	return out
 }

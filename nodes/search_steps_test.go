@@ -213,3 +213,39 @@ func TestParseQueriesJSON_Variants(t *testing.T) {
 		t.Error("JSON without a query list must error")
 	}
 }
+
+func TestSearchSteps_QueriesListDedupesLikeQueriesJson(t *testing.T) {
+	fakeSearch(t, map[string][]map[string]string{
+		"validate iban": {apiRow("ValidateIban", "h/iban-tools", "1", "Validate an IBAN")},
+	})
+	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
+		Queries: []string{"validate iban", "  validate iban  ", "Validate IBAN", "   ", ""},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.StepCount != 1 {
+		t.Fatalf("duplicates and blanks must collapse to one step (parity with queries_json), got %d", got.StepCount)
+	}
+	if got.Steps[0].Query != "validate iban" {
+		t.Errorf("first spelling wins, got %q", got.Steps[0].Query)
+	}
+}
+
+func TestSearchSteps_NegativeLimitFallsToDefault(t *testing.T) {
+	rows := make([]map[string]string, 0, 8)
+	for _, n := range []string{"A1", "B2", "C3", "D4", "E5", "F6", "G7", "H8"} {
+		rows = append(rows, apiRow("Convert"+n, "h/p", "1", "convert units "+n))
+	}
+	fakeSearch(t, map[string][]map[string]string{"convert units": rows})
+	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
+		Queries: []string{"convert units"},
+		Limit:   -5,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Steps[0].Candidates) != 5 {
+		t.Fatalf("negative limit must fall to the default of 5, got %d", len(got.Steps[0].Candidates))
+	}
+}
