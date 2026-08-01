@@ -55,6 +55,13 @@ message FanOutRequest {
   // succeeded). Surfaces in FanOutPlan.error as "decompose: <detail>" when the
   // step list is unusable, so a transient LLM failure is attributed honestly.
   string llm_error = 8;
+  // The original task description, echoed straight back out on FanOutPlan and
+  // used by nothing here. It exists because a MUTATING run continues on a
+  // forked child graph that resumes AT this node: the flow's @flow_input node
+  // does not re-fire there, so a downstream consumer of the task text (the
+  // skeleton renderer in CheckBridges) can only be fed from a node that runs
+  // in the child. This is that carrier.
+  string task = 9;
 }
 
 // Output of PlanFanOut AND the input every search cell receives — the
@@ -91,6 +98,12 @@ message FanOutPlan {
   // for the same reason as llm_error. PlanFanOut itself refuses to fan out in
   // this case, so a cell only ever sees it true on a non-mutating run.
   bool task_blank = 9;
+  // The original task description, echoed verbatim from the request. The
+  // terminal skeleton renderer needs it, and a mutating run's forked child
+  // resumes AT PlanFanOut — the flow's @flow_input node never re-fires there,
+  // so an edge from this node is the only way the task text reaches a node
+  // downstream of the fork. Ignored by the cells.
+  string task = 10;
 }
 
 // What one fan-out cell produced: which row/step it owns and the scored

@@ -332,6 +332,7 @@ func TestPlanFanOut_EchoesBroadcastKnobs(t *testing.T) {
 		MaxAlternatives: 2,
 		Threshold:       0.6,
 		LlmError:        "anthropic: truncated response",
+		Task:            "verify an IBAN and look up its bank",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -344,6 +345,33 @@ func TestPlanFanOut_EchoesBroadcastKnobs(t *testing.T) {
 	}
 	if got.TaskBlank {
 		t.Fatalf("task_blank must echo the request, got true")
+	}
+	// The forked child resumes AT this node and @flow_input never re-fires
+	// there, so the task text can only reach the terminal from here.
+	if got.Task != "verify an IBAN and look up its bank" {
+		t.Fatalf("the task text must be echoed for nodes downstream of the fork: %q", got.Task)
+	}
+}
+
+// Every exit path must echo the task carrier — a refusal still runs the rest
+// of the authored graph, and the terminal still needs the task text.
+func TestPlanFanOut_TaskCarrierSurvivesEveryExitPath(t *testing.T) {
+	const task = "verify an IBAN and look up its bank"
+	cases := map[string]*gen.FanOutRequest{
+		"blank task": {Queries: []string{"a b", "c d"}, TaskBlank: true, Task: task},
+		"no query":   {Task: task},
+		"grown":      {Queries: []string{"a b", "c d"}, Task: task},
+		"one step":   {Queries: []string{"a b"}, Task: task},
+	}
+	for name, req := range cases {
+		ax := plannerContext(t)
+		got, err := nodes.PlanFanOut(context.Background(), ax, req)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if got.Task != task {
+			t.Fatalf("%s: the task carrier must survive: %q", name, got.Task)
+		}
 	}
 }
 
