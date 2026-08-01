@@ -43,7 +43,9 @@ message Candidate {
   // capability verbs and data-shape words ("parse", "validate", "details", "document", "schema")
   // carry a reduced weight, and a candidate that matches NONE of the query's domain-specific
   // words has its score halved — so generic-word overlap alone cannot clear the 0.45 match
-  // threshold for any realistic query. This is a lexical measure computed by this node, NOT a
+  // threshold for any realistic query. A domain word the candidate mentions only inside an
+  // unrelated hyphenated compound (e.g. "qr" appearing solely in "QR-IBAN" for a QR-code query)
+  // counts as generic, not as a domain match. This is a lexical measure computed by this node, NOT a
   // platform ranking signal — the platform's search API returns no thresholdable score today.
   // 1.0 still means every informative query word matched.
   double score = 5;

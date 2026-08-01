@@ -8,6 +8,8 @@ var (
 	ParseQueriesJSON     = parseQueriesJSON
 	Tokenize             = tokenize
 	ScoreCandidate       = scoreCandidate
+	TokenRuns            = tokenRuns
+	CompoundOnly         = compoundOnly
 )
 
 // APINode re-exports the search-response row type for scoring tests.

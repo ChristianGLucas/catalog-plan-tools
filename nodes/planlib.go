@@ -179,21 +179,35 @@ func searchNodes(ctx context.Context, query string) ([]apiNode, error) {
 	return nodes, nil
 }
 
+// pkgNameSeparators rewrites package-name hyphens/underscores to spaces before
+// scoring: "iban-tools" is naming convention, not a domain compound, so the
+// compound-context gate below must never read "-tools" as a foreign compound.
+var pkgNameSeparators = strings.NewReplacer("-", " ", "_", " ")
+
 // scoreCandidate returns the WEIGHTED fraction of the query's informative
 // tokens found in the candidate's name + package + description: 1.0 = every
 // informative query word matched, 0.0 = none did. Domain-specific tokens
 // carry weight 1.0 and generic data-shape tokens genericWeight, so a
 // candidate that shares only generic words with the query ("details","code")
 // cannot clear the 0.45 match threshold, while missing only a generic word
-// barely dents the score.
+// barely dents the score. A domain token that appears in the candidate ONLY
+// inside foreign hyphen/underscore compounds ("qr" found solely in "QR-IBAN"
+// for a query about QR codes) is coincidental-literal evidence, not a domain
+// match: it is counted at genericWeight and does not disarm the halving.
 func scoreCandidate(queryToks []string, n apiNode) float64 {
 	if len(queryToks) == 0 {
 		return 0
 	}
+	text := n.NodeName + " " + pkgNameSeparators.Replace(n.PackageName) + " " + n.Description
 	candToks := make(map[string]bool)
-	for _, t := range tokenize(n.NodeName + " " + n.PackageName + " " + n.Description) {
+	for _, t := range tokenize(text) {
 		candToks[t] = true
 	}
+	querySet := make(map[string]bool, len(queryToks))
+	for _, qt := range queryToks {
+		querySet[qt] = true
+	}
+	runs := tokenRuns(text)
 	var hit, total float64
 	hasSpecific, specificMatched := false, false
 	for _, qt := range queryToks {
@@ -203,6 +217,10 @@ func scoreCandidate(queryToks []string, n apiNode) float64 {
 			hasSpecific = true
 		}
 		if candToks[qt] {
+			if w == 1.0 && compoundOnly(runs, qt, querySet) {
+				hit += genericWeight
+				continue
+			}
 			hit += w
 			if w == 1.0 {
 				specificMatched = true
@@ -296,6 +314,86 @@ func searchOneQuery(ctx context.Context, query string, limit int) *gen.StepCandi
 		step.Candidates = step.Candidates[:limit]
 	}
 	return step
+}
+
+// tokenRun is one maximal alphanumeric run of the candidate's normalized text
+// plus the single joining character to its neighbors when they are directly
+// hyphen/underscore-attached ("qr-iban" → runs "qr","iban" each recording the
+// other as a compound neighbor; "qr iban" records none).
+type tokenRun struct {
+	tok                 string // singularized lowercase run
+	leftJoin, rightJoin string // singularized compound neighbor, "" when not joined by - or _
+}
+
+// tokenRuns scans the camel-split, lowercased text into alphanumeric runs and
+// records direct hyphen/underscore joins between adjacent runs.
+func tokenRuns(text string) []tokenRun {
+	runes := []rune(strings.ToLower(camelBoundary(text)))
+	alnum := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+	type span struct{ start, end int }
+	var spans []span
+	for i := 0; i < len(runes); {
+		if !alnum(runes[i]) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(runes) && alnum(runes[j]) {
+			j++
+		}
+		spans = append(spans, span{i, j})
+		i = j
+	}
+	runs := make([]tokenRun, len(spans))
+	for k, sp := range spans {
+		runs[k].tok = singular(string(runes[sp.start:sp.end]))
+		if k > 0 && spans[k-1].end == sp.start-1 && (runes[sp.start-1] == '-' || runes[sp.start-1] == '_') {
+			runs[k].leftJoin = runs[k-1].tok
+		}
+	}
+	for k := range runs {
+		if k+1 < len(runs) && runs[k+1].leftJoin != "" {
+			runs[k].rightJoin = runs[k+1].tok
+		}
+	}
+	return runs
+}
+
+// compoundOnly reports whether EVERY occurrence of token in the candidate's
+// runs is compound-joined to at least one FOREIGN domain word — a neighbor
+// that is informative (≥2 chars, not digits-only, not a stopword), carries
+// full domain weight, and is not itself one of the query's tokens — without
+// any query token corroborating the compound. One standalone occurrence, one
+// occurrence whose joins are merely generic/numeric qualifiers ("qr-code",
+// "utf-8"), or one occurrence corroborated by a query token in the same
+// compound ("swiss qr-iban" when the query names iban) keeps full credit.
+func compoundOnly(runs []tokenRun, token string, querySet map[string]bool) bool {
+	foreign := func(nb string) bool {
+		return len(nb) >= 2 && !allDigits(nb) && !stopwords[nb] &&
+			tokenWeight(nb) == 1.0 && !querySet[nb]
+	}
+	found := false
+	for _, r := range runs {
+		if r.tok != token {
+			continue
+		}
+		found = true
+		hasForeign := (r.leftJoin != "" && foreign(r.leftJoin)) || (r.rightJoin != "" && foreign(r.rightJoin))
+		corroborated := (r.leftJoin != "" && querySet[r.leftJoin]) || (r.rightJoin != "" && querySet[r.rightJoin])
+		if !hasForeign || corroborated {
+			return false
+		}
+	}
+	return found
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // countNameHits returns how many of the query's informative tokens appear in
