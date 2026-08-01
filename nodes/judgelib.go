@@ -188,12 +188,12 @@ func judgeStep(ctx context.Context, sc *gen.StepCandidates, apiKey, model string
 
 	raw, err := callAnthropic(ctx, apiKey, model, judgePrompt(sc.GetQuery(), cands))
 	if err != nil {
-		sc.ScoringError = joinClause(sc.GetScoringError(), "judge: "+err.Error()+"; ranking "+sc.GetScoreBasis()+"ly")
+		sc.ScoringError = joinClause(sc.GetScoringError(), "judge: "+err.Error()+"; ranking "+basisAdverb(sc.GetScoreBasis()))
 		return sc
 	}
 	ranking, err := parseJudgeRanking(raw, len(cands))
 	if err != nil {
-		sc.ScoringError = joinClause(sc.GetScoringError(), "judge: "+err.Error()+"; ranking "+sc.GetScoreBasis()+"ly")
+		sc.ScoringError = joinClause(sc.GetScoringError(), "judge: "+err.Error()+"; ranking "+basisAdverb(sc.GetScoreBasis()))
 		return sc
 	}
 
@@ -222,6 +222,19 @@ func judgeStep(ctx context.Context, sc *gen.StepCandidates, apiKey, model string
 	sc.Candidates = judged
 	sc.ScoreBasis = basisJudge
 	return sc
+}
+
+// basisAdverb renders a basis as the adverb the attribution reads with, so a
+// degraded step says "ranking semantically", not "ranking semanticly".
+func basisAdverb(basis string) string {
+	switch basis {
+	case basisSemantic:
+		return "semantically"
+	case basisJudge:
+		return "by judge"
+	default:
+		return "lexically"
+	}
 }
 
 // joinClause appends an attribution clause with the package's "; " separator.

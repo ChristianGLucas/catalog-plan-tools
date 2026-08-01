@@ -95,7 +95,7 @@ func judgeUnavailableClause(ax axiom.Context, basis string) string {
 	if axiom.SecretStatusOf(ax.Secrets(), judgeSecret) == axiom.SecretStatusRevoked {
 		reason = judgeSecret + " was revoked during this execution"
 	}
-	return "judge: " + reason + "; ranking " + basis + "ly"
+	return "judge: " + reason + "; ranking " + basisAdverb(basis)
 }
 
 // scoreSteps runs the stack over a whole batch of steps CONCURRENTLY — one
