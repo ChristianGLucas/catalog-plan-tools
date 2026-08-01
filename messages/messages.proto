@@ -254,9 +254,11 @@ message Candidate {
   // What produced `score`: "lexical", "semantic" or "judge". Never empty on a candidate this
   // package produced.
   string score_basis = 7;
-  // One line from the judge on WHY this node fits the step, set on the top-ranked candidate of a
-  // judged step. Empty on every other candidate and on every unjudged basis. This is the plan's
-  // user-visible justification — read it before wiring the pick.
+  // One line on WHY this node fits the step, set on the top-ranked candidate of a judged step and
+  // empty on every other candidate and every unjudged basis. Usually the judge's own words; when
+  // the model returns a ranking but omits the prose (it does, occasionally), this states the
+  // confidence it assigned and says plainly that no written reason came back — never an invented
+  // rationale. This is the plan's user-visible justification: read it before wiring the pick.
   string pick_reason = 8;
 }
 
@@ -266,6 +268,10 @@ message StepCandidates {
   string query = 1;
   // Ranked candidates, best first, capped at the requested limit. Empty means the catalog returned
   // nothing for the query or any of its relaxed keyword variants — a genuine "no match" signal.
+  // On a JUDGED step the ordering is by (basis, then score), not by raw score: candidates the judge
+  // ranked come first in confidence order, and any it omitted follow, keeping their retrieved
+  // similarity and their own score_basis. Compare scores only WITHIN a basis — the step's pick is
+  // chosen that way too.
   repeated Candidate candidates = 2;
   // True when the full-phrase search returned nothing and these candidates came from relaxed
   // per-keyword searches instead — treat them with more skepticism than a phrase hit. Only the

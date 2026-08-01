@@ -3,6 +3,7 @@ package nodes_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -387,5 +388,156 @@ func TestScoring_ThresholdsSitInTheMeasuredGaps(t *testing.T) {
 	// rather than silently matching everything.
 	if nodes.ThresholdFor("something-new") != nodes.ThresholdFor(basisLexicalName) {
 		t.Fatalf("an unrecognised basis must use the lexical default")
+	}
+}
+
+// R20 MINOR-1, at exactly the reviewer's probe shape: retrieval returns a
+// high-similarity candidate the judge then OMITS from its ranking. Before the
+// fix the plan scored that unjudged candidate — labelled score_basis "judge",
+// carrying a cosine similarity measured against the judge's 0.55 threshold,
+// with the judge's pick_reason dropped, and NOT equal to candidates[0].
+func TestScoring_UnjudgedCandidateCannotWinAJudgedStep(t *testing.T) {
+	const q = "the step the judge actually read"
+	// Run the same shape either side of the judge threshold (0.55): the
+	// unjudged HighSim scores 0.52, so pre-fix it won BOTH — silently turning
+	// the low case into the wrong gap and the high case into the wrong match.
+	for _, tc := range []struct {
+		confidence float64
+		wantMatch  bool
+	}{{0.50, false}, {0.60, true}} {
+		fakeSemantic(t, map[string][]map[string]any{
+			q: {
+				semRow("HighSim", "h/wrong-tools", "1.0.0", "Retrieves well, does something else.", 0.52),
+				semRow("Chosen", "h/right-tools", "1.0.0", "Does exactly this step.", 0.30),
+			},
+		})
+		// The judge ranks ONLY index 1 (Chosen) and omits HighSim entirely.
+		fakeJudge(t, fmt.Sprintf(`{"ranking":[{"index":1,"confidence":%v,"reason":"this is the one that does the step"}]}`, tc.confidence), "")
+
+		search, err := nodes.SearchSteps(context.Background(), keyedContext(t), &gen.SearchStepsInput{Queries: []string{q}})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		step := search.GetSteps()[0]
+		if step.GetScoreBasis() != "judge" {
+			t.Fatalf("precondition: the step must be judged, got %q", step.GetScoreBasis())
+		}
+		// The judged candidate leads the list even though it scores lower on
+		// the raw number — ordering is (basis, then score).
+		if step.GetCandidates()[0].GetNode() != "Chosen" {
+			t.Fatalf("judged candidates must lead the list, got %q", step.GetCandidates()[0].GetNode())
+		}
+
+		plan, err := nodes.AssemblePlan(context.Background(), newTestContext(t), &gen.AssemblePlanInput{
+			Primary: search.GetSteps(),
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		ps := plan.GetSteps()[0]
+		// THE killing assertion: the step is scored on the judged candidate's
+		// confidence, never on the unjudged 0.52 cosine.
+		if ps.GetScore() != tc.confidence {
+			t.Fatalf("confidence %v: the step must be scored on the JUDGED candidate, got %v", tc.confidence, ps.GetScore())
+		}
+		if ps.GetScoreBasis() != "judge" {
+			t.Fatalf("confidence %v: score and basis must describe the same number, got basis %q", tc.confidence, ps.GetScoreBasis())
+		}
+		if ps.GetMatched() != tc.wantMatch {
+			t.Fatalf("confidence %v: want matched=%v against the judge threshold, got %v", tc.confidence, tc.wantMatch, ps.GetMatched())
+		}
+		if !tc.wantMatch {
+			// An honest gap, decided on a judge confidence rather than a stray cosine.
+			if len(plan.GetGaps()) != 1 {
+				t.Fatalf("confidence %v: must be a gap, got %d", tc.confidence, len(plan.GetGaps()))
+			}
+			continue
+		}
+		if ps.GetPackage() != "h/right-tools" || ps.GetNode() != "Chosen" {
+			t.Fatalf("the pick must come from the JUDGED subset, got %q/%q", ps.GetPackage(), ps.GetNode())
+		}
+		if ps.GetPickReason() == "" {
+			t.Fatalf("the judge's reason must survive to the plan")
+		}
+		// And the pick IS candidates[0] — the consistency retrievelib's
+		// re-sort comment exists to protect.
+		if ps.GetNode() != step.GetCandidates()[0].GetNode() {
+			t.Fatalf("the plan's pick must be candidates[0]")
+		}
+	}
+}
+
+// R20 MINOR-2: the ADR-156 revoked-vs-unset distinction was entirely unguarded
+// — the reviewer inverted the branch AND deleted it, and the suite stayed
+// green. These two sub-tests pin the exact wording of both branches, because
+// they tell a caller to do two different things.
+func TestScoring_JudgeUnavailableDistinguishesRevokedFromUnset(t *testing.T) {
+	pool := semanticPool()
+
+	t.Run("never configured", func(t *testing.T) {
+		fakeSemantic(t, pool)
+		got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
+			Queries: []string{xmlLinksQuery},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		se := got.GetSteps()[0].GetScoringError()
+		if !strings.Contains(se, "no ANTHROPIC_API_KEY configured for this tenant") {
+			t.Fatalf("an unset secret must say so (check axiom.yaml), got %q", se)
+		}
+		if strings.Contains(se, "revoked") {
+			t.Fatalf("an unset secret must NOT be reported as revoked: %q", se)
+		}
+	})
+
+	t.Run("revoked mid-execution", func(t *testing.T) {
+		fakeSemantic(t, pool)
+		ctx := newTestContext(t)
+		// Present in the execution's initial snapshot, gone from the live
+		// vault — Get() is ("",false) exactly as for unset, so only Status
+		// tells them apart.
+		ctx.revokedNames["ANTHROPIC_API_KEY"] = true
+		got, err := nodes.SearchSteps(context.Background(), ctx, &gen.SearchStepsInput{
+			Queries: []string{xmlLinksQuery},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		se := got.GetSteps()[0].GetScoringError()
+		if !strings.Contains(se, "ANTHROPIC_API_KEY was revoked during this execution") {
+			t.Fatalf("a revoked secret must say so (re-authorize), got %q", se)
+		}
+		if strings.Contains(se, "no ANTHROPIC_API_KEY configured") {
+			t.Fatalf("a revoked secret must NOT be reported as never-configured: %q", se)
+		}
+	})
+}
+
+// R20 MINOR-3: the model returns a ranking but omits the prose. The field must
+// still say something true — the confidence it assigned and that no written
+// reason came back — never an invented rationale and never a bare empty that
+// reads as "the judge had nothing to say".
+func TestScoring_PickReasonFallsBackWhenTheModelOmitsIt(t *testing.T) {
+	fakeSemantic(t, semanticPool())
+	fakeJudge(t, `{"ranking":[{"index":2,"confidence":0.91},{"index":1,"confidence":0.4},{"index":0,"confidence":0.1}]}`, "")
+
+	got, err := nodes.SearchSteps(context.Background(), keyedContext(t), &gen.SearchStepsInput{
+		Queries: []string{xmlLinksQuery},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	top := got.GetSteps()[0].GetCandidates()[0]
+	if top.GetNode() != "ExtractAttribute" {
+		t.Fatalf("precondition: the judge's pick must lead, got %q", top.GetNode())
+	}
+	reason := top.GetPickReason()
+	if !strings.Contains(reason, "0.91") || !strings.Contains(reason, "no written reason") {
+		t.Fatalf("the fallback must state the confidence and that no prose came back, got %q", reason)
+	}
+	// Runner-ups still carry no reason at all.
+	if got.GetSteps()[0].GetCandidates()[1].GetPickReason() != "" {
+		t.Fatalf("only the top pick is justified")
 	}
 }

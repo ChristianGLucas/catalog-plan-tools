@@ -120,10 +120,6 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 	matched := 0
 	for _, sc := range basisSteps {
 		ps := &gen.PlanStep{Description: sc.GetQuery(), ScoreBasis: sc.GetScoreBasis()}
-		threshold := callerThreshold
-		if threshold <= 0 {
-			threshold = thresholdFor(sc.GetScoreBasis())
-		}
 		// A scoring stage that fell short is attributed but never fatal: the
 		// step still has a plan, ranked one stage weaker, and says which.
 		if se := sc.GetScoringError(); se != "" {
@@ -135,7 +131,20 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 			result.Steps = append(result.Steps, ps)
 			continue
 		}
-		best := bestCandidate(sc.GetCandidates())
+		best := bestCandidateForBasis(sc.GetCandidates(), sc.GetScoreBasis())
+		// The step reports the basis of the pick it actually made, so score,
+		// score_basis and the threshold always describe the same number. They
+		// differ only when nothing carried the step's basis, which is worth
+		// saying out loud rather than papering over.
+		if best != nil && best.GetScoreBasis() != "" && best.GetScoreBasis() != sc.GetScoreBasis() {
+			ps.ScoreBasis = best.GetScoreBasis()
+			errParts = append(errParts, fmt.Sprintf("scoring: %s: ranked %s but the best candidate is %s-scored",
+				sc.GetQuery(), sc.GetScoreBasis(), best.GetScoreBasis()))
+		}
+		threshold := callerThreshold
+		if threshold <= 0 {
+			threshold = thresholdFor(ps.GetScoreBasis())
+		}
 		if best != nil {
 			ps.Score = best.Score
 			if best.Score >= threshold {
@@ -171,6 +180,40 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 	result.ScoreBasis = aggregateBasis(result.Steps)
 	result.Error = strings.Join(errParts, "; ")
 	return result
+}
+
+// bestCandidateForBasis picks the step's winner from the candidates ranked on
+// the step's OWN basis, so one scale governs the verdict.
+//
+// A judged step's list can hold both kinds of number: the judge scores the
+// candidates it ranked, and any the model omitted keep their retrieved cosine
+// similarity (honest, and better than a fabricated zero). Picking by max score
+// across that mixed list let an UNJUDGED candidate win a step labelled
+// score_basis "judge" — so the plan's pick was not candidates[0], the judge's
+// pick_reason was dropped, and a cosine similarity was measured against the
+// judge's 0.55 threshold (R20 MINOR-1). Comparing only within a basis fixes all
+// four at once.
+//
+// If nothing carries the step's basis, the overall best still wins — a pick is
+// more useful than none — and the caller is told, because assemblePlanCore then
+// reports the PICK's basis rather than the step's.
+func bestCandidateForBasis(cs []*gen.Candidate, basis string) *gen.Candidate {
+	if basis == "" {
+		return bestCandidate(cs)
+	}
+	var best *gen.Candidate
+	for _, c := range cs {
+		if c.GetScoreBasis() != basis {
+			continue
+		}
+		if best == nil || c.Score > best.Score {
+			best = c
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return bestCandidate(cs)
 }
 
 // bestCandidate returns the highest-scoring candidate (first wins ties, so an

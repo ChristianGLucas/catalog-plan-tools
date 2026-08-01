@@ -215,8 +215,17 @@ func judgeStep(ctx context.Context, sc *gen.StepCandidates, apiKey, model string
 			judged = append(judged, c)
 		}
 	}
-	if len(judged) > 0 && strings.TrimSpace(ranking[0].Reason) != "" {
+	if len(judged) > 0 {
+		// The reason is best-effort: the model is asked for one and usually
+		// gives it, but it does omit the field sometimes (observed live). An
+		// empty pick_reason on a judged step reads as "the judge had nothing to
+		// say", which is not what happened — so the fallback states exactly what
+		// IS known, and says the model gave no prose rather than inventing any
+		// (R20 MINOR-3).
 		judged[0].PickReason = strings.TrimSpace(ranking[0].Reason)
+		if judged[0].PickReason == "" {
+			judged[0].PickReason = fmt.Sprintf("Judged the best match for this step at %.2f confidence; the model returned no written reason.", ranking[0].Confidence)
+		}
 	}
 
 	sc.Candidates = judged
