@@ -254,7 +254,7 @@ func renderSkeleton(task string, steps []*gen.PlanStep, bridges []*gen.BridgeChe
 			}
 			desc := collapse(f.desc)
 			if desc == "" {
-				desc = "TODO(planner): describe this field (mirrored from " + first.step.Node + " input \"" + f.path + "\" — the published field has no description)"
+				desc = "TODO(planner): describe this field (mirrored from " + first.node + " input \"" + f.path + "\" — the published field has no description)"
 			}
 			w("            description: %s", yq(desc))
 		}
