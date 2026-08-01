@@ -495,6 +495,49 @@ func TestPlanFanOut_MisalignedColumnIsNotReportedAsAlreadyGrown(t *testing.T) {
 	if !strings.HasPrefix(got.Error, "CELL_ROW_NOT_ZERO") {
 		t.Fatalf("misalignment must be attributed as CELL_ROW_NOT_ZERO, got %q", got.Error)
 	}
+	// R19 MINOR-7: refusing to grow is not enough. The misaligned cell still
+	// receives the plan and still feeds the join, so the caller would get a
+	// one-step plan of the WRONG step labelled plan_basis "decomposed". That
+	// has to reach them.
+	if !strings.HasPrefix(got.PlanError, "CELL_ROW_NOT_ZERO") {
+		t.Fatalf("CELL_ROW_NOT_ZERO must reach the caller via plan_error, got %q", got.PlanError)
+	}
+}
+
+// The other side of the R19 MINOR-7 split: NO_CELL and NO_JOIN stay internal,
+// because in those shapes there is no caller to inform — NO_CELL means there is
+// no cell to echo through, NO_JOIN means the cell feeds nothing, so no plan is
+// assembled for anyone to be misled by.
+func TestPlanFanOut_ShapesWithNoEchoChannelStayInternal(t *testing.T) {
+	planFanOutNode := axiom.ReflectionNode{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 2, GridRow: 0}
+	cellNode := axiom.ReflectionNode{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 3, GridRow: 0}
+
+	cases := map[string]fanoutReflection{
+		// No SearchStepAt anywhere: nothing to echo through.
+		"NO_CELL": {
+			nodes:   []axiom.ReflectionNode{planFanOutNode, {InstanceID: 2, Name: "SearchSteps", PackageName: selfPkg, GridCol: 3, GridRow: 0}},
+			current: 1,
+		},
+		// A cell that feeds nothing: no join, so no plan is assembled.
+		"NO_JOIN": {
+			nodes:   []axiom.ReflectionNode{planFanOutNode, cellNode},
+			edges:   []axiom.ReflectionEdge{{SrcInstance: 1, DstInstance: 2}},
+			current: 1,
+		},
+	}
+	for want, graph := range cases {
+		ax := &fanoutTestContext{t: t, reflection: graph, mutation: &fanoutRecorder{}}
+		got, err := nodes.PlanFanOut(context.Background(), ax, &gen.FanOutRequest{Queries: []string{"a b", "c d"}})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", want, err)
+		}
+		if !strings.HasPrefix(got.Error, want) {
+			t.Fatalf("%s: wrong attribution: %q", want, got.Error)
+		}
+		if got.PlanError != "" {
+			t.Fatalf("%s: has no echo channel, so it must not claim the caller-visible one: %q", want, got.PlanError)
+		}
+	}
 }
 
 // The v0 phantom-plan guard: a blank task must refuse to fan out even when

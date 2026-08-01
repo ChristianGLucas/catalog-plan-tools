@@ -119,9 +119,14 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 	// shadows ALREADY_GROWN in practice.
 	if template.GridRow != 0 {
 		// Cells select their step by canvas row, so the authored cell must sit
-		// at row 0 or every step index would be shifted. Refuse loudly rather
-		// than plan a silently misaligned fan-out.
-		appendError(out, fmt.Sprintf("CELL_ROW_NOT_ZERO: the lowest authored %s cell sits at row %d; a fan-out column must start at row 0", cellNodeName, template.GridRow))
+		// at row 0 or every step index would be shifted. Refusing to grow is
+		// not enough: the misaligned cell still receives the plan, still
+		// echoes, and still feeds the join, so the caller would get a ONE-step
+		// plan built from the wrong step (or a ROW_OUT_OF_RANGE stub) labelled
+		// plan_basis "decomposed" — indistinguishable from a genuine one-step
+		// task. A 1-of-N plan is a bigger distortion than TRUNCATED's 16-of-20,
+		// so it goes on the caller-visible channel (R19 MINOR-7).
+		appendPlanError(out, fmt.Sprintf("CELL_ROW_NOT_ZERO: the lowest authored %s cell sits at row %d; a fan-out column must start at row 0", cellNodeName, template.GridRow))
 		return out, nil
 	}
 	if cells > 1 {
@@ -182,12 +187,22 @@ func appendError(out *gen.FanOutPlan, clause string) {
 }
 
 // appendPlanError records a clause on BOTH the node's own error and the
-// caller-visible plan_error channel. Reserved for conditions that change the
-// SHAPE of the plan the caller receives, so a short plan is never presented as
-// a complete one. Bookkeeping clauses (ALREADY_GROWN on every forked child,
-// NO_GRAPH on a direct invoke) deliberately stay on `error` only; the
-// structural guards (NO_CELL / NO_JOIN / CELL_ROW_NOT_ZERO) are authoring-time
-// faults that cannot arise in the authored flow, so they stay internal too.
+// caller-visible plan_error channel. The test for which channel a clause
+// belongs on is NOT whether the condition is reachable in the flow this node
+// was written for — these nodes are published, so they run in graphs their
+// author never saw. It is: can this condition leave a caller holding a
+// MISLEADING plan? If so it must travel out.
+//
+//   - TRUNCATED and CELL_ROW_NOT_ZERO: yes. Both hand back a plan with fewer
+//     steps than the task decomposed to, presented as if complete.
+//   - ALREADY_GROWN (fires on every forked child) and NO_GRAPH (direct
+//     invoke): no. The plan the caller gets is correct; the clause is
+//     bookkeeping, and surfacing it would put noise in every successful
+//     multi-step run.
+//   - NO_CELL and NO_JOIN: no, because there is no caller to inform — the
+//     echo channel does not exist in those shapes. NO_CELL means there is no
+//     SearchStepAt to echo through at all; NO_JOIN means the cell feeds
+//     nothing, so no plan is assembled for anyone to be misled by.
 func appendPlanError(out *gen.FanOutPlan, clause string) {
 	appendError(out, clause)
 	if out.PlanError == "" {
