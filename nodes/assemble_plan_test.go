@@ -263,3 +263,18 @@ func TestAssemblePlan_NegativeKnobsFallToDefaults(t *testing.T) {
 		t.Fatalf("negative max_alternatives must fall to 3, got %d", len(got.Steps[0].Alternatives))
 	}
 }
+
+func TestAssemblePlan_TaskBlankForcesNoInput(t *testing.T) {
+	got, err := nodes.AssemblePlan(context.Background(), newTestContext(t), &gen.AssemblePlanInput{
+		Primary: []*gen.StepCandidates{
+			{Query: "hallucinated step", Candidates: []*gen.Candidate{cand("N", "h/p", "1", 1.0)}},
+		},
+		TaskBlank: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.PlanBasis != "none" || got.Error != "NO_INPUT" || got.Feasible || len(got.Steps) != 0 {
+		t.Fatalf("task_blank must force NO_INPUT even with populated results, got %+v", got)
+	}
+}

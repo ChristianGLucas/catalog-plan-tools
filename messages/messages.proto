@@ -88,6 +88,12 @@ message AssemblePlanInput {
   double threshold = 4;
   // Max runner-up node refs per step in alternatives. 0 means the default of 3.
   int32 max_alternatives = 5;
+  // Set true by a caller who KNOWS the original task text was blank — forces the
+  // "none"/NO_INPUT verdict even when search results are present. Exists because an
+  // LLM decomposer, handed an empty task, cheerfully invents generic steps that then
+  // match real nodes — producing a confident plan for no task at all (observed live).
+  // Omitted/false leaves behavior unchanged.
+  bool task_blank = 6;
 }
 
 // One step of the assembled plan: the capability, whether the catalog covers it, and with what.

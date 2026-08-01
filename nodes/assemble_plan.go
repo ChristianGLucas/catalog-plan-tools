@@ -20,6 +20,9 @@ func AssemblePlan(ctx context.Context, ax axiom.Context, input *gen.AssemblePlan
 		maxAlt = 3
 	}
 
+	if input.TaskBlank {
+		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT"}, nil
+	}
 	basisSteps := input.Primary
 	basis := "decomposed"
 	if len(basisSteps) == 0 {
