@@ -27,6 +27,47 @@ message SearchStepsInput {
   int32 limit = 4;
 }
 
+// Input for PlanFanOut: the decomposed steps to fan out over, plus placement
+// and search knobs forwarded to the appended cells.
+message FanOutRequest {
+  // One catalog query per step. Highest precedence.
+  repeated string queries = 1;
+  // Raw JSON (or LLM text containing JSON) holding the queries — same
+  // defensive parsing as SearchStepsInput.queries_json.
+  string queries_json = 2;
+  // A single query, used only when queries and queries_json are empty.
+  string query = 3;
+  // The dedicated canvas column the appended search cells are placed in,
+  // one row per step (row k searches step k). 0 resolves to column 4.
+  int32 fanout_col = 4;
+  // Forwarded to every cell: max runner-up candidates per step. 0 -> 5.
+  int32 max_alternatives = 5;
+  // Forwarded to every cell: minimum score to count the step matched. 0 -> 0.45.
+  double threshold = 6;
+}
+
+// Output of PlanFanOut AND the input every appended search cell receives over
+// its mutation-added edge (added edges carry no adapters, so the whole plan is
+// broadcast; each cell picks its own step by reading its canvas row via
+// reflection). Field numbers and types are mirrored byte-for-byte by
+// plan-fanout-cell's FanOutPlan — keep the two in sync.
+message FanOutPlan {
+  // One query per decomposed step; the cell at fan-out row k searches queries[k].
+  repeated string queries = 1;
+  // The dedicated canvas column the cells were placed in.
+  int32 fanout_col = 2;
+  // How many cells THIS invocation appended (0 when the fan-out column was
+  // already populated — the idempotence guard — or when there was nothing to plan).
+  int32 appended = 3;
+  // True when this invocation emitted the mutation batch that grows the graph.
+  bool mutated = 4;
+  // Degradation attribution: why nothing (or less than expected) was appended.
+  string error = 5;
+  // Search knobs forwarded to every cell.
+  int32 max_alternatives = 6;
+  double threshold = 7;
+}
+
 // One candidate node from the catalog, with a locally computed relevance score.
 message Candidate {
   // The node's name, e.g. "ValidateIban".

@@ -1,5 +1,5 @@
 name: christiangeorgelucas/catalog-plan-tools
-version: 0.4.0
+version: 0.5.0
 language: go
 nodes:
     - name: SearchSteps
@@ -11,3 +11,7 @@ nodes:
     - name: CheckBridges
       input: CheckBridgesInput
       output: PlanResult
+    - name: PlanFanOut
+      input: FanOutRequest
+      output: FanOutPlan
+      mutation_capable: true
