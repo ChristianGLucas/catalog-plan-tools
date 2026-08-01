@@ -107,18 +107,37 @@ var carrierTier = func() map[string]int {
 }()
 
 // classifyCarriers returns the carriers a field earns. High precision: the
-// field NAME matching is the strong signal (type-independent); a description
-// match counts only on a compatible JSON type.
+// field NAME matching is the strong signal, and a description match also
+// counts — but BOTH are gated on the carrier's compatible JSON types. This is
+// a deliberate tightening vs the offline engine's carriers.py (where a name
+// match ignores type): the engine discovers candidate compositions, but this
+// node renders VERDICTS, and a boolean named "iban_valid" is *about* an IBAN
+// without *carrying* one — awarding it the carrier produced a live
+// false-positive bridge (bool iban_valid -> string iban input).
 func classifyCarriers(name, jtype, desc string) []string {
 	name = strings.ToLower(name)
 	desc = strings.ToLower(desc)
 	var out []string
 	for _, d := range carrierDefs {
-		if d.nameRe.MatchString(name) || (d.types[jtype] && d.descRe.MatchString(desc)) {
+		if !d.types[jtype] {
+			continue
+		}
+		if d.nameRe.MatchString(name) || d.descRe.MatchString(desc) {
 			out = append(out, d.name)
 		}
 	}
 	return out
+}
+
+// jtypesCompatible reports whether an edge adapter can feed a producer leaf
+// of type a into a consumer field of type b without conversion: same type, or
+// the integer/number numeric family.
+func jtypesCompatible(a, b string) bool {
+	if a == b {
+		return true
+	}
+	num := map[string]bool{"integer": true, "number": true}
+	return num[a] && num[b]
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +492,9 @@ func judgeBridge(from, to *nodePorts) *gen.BridgeCheck {
 			continue
 		}
 		for _, inf := range to.inFields {
+			if !jtypesCompatible(ol.jtype, inf.jtype) {
+				continue
+			}
 			for _, c := range ol.carriers {
 				if !contains(inf.carriers, c) {
 					continue

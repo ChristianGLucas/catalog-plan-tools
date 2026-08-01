@@ -83,6 +83,41 @@ func TestClassifyCarriers(t *testing.T) {
 	if cs := classifyCarriers("note", "string", "freeform text about anything"); len(cs) != 0 {
 		t.Errorf("freeform text must earn no carrier, got %v", cs)
 	}
+	// A boolean is ABOUT an iban, it does not CARRY one — live false positive:
+	// bool iban_valid must never earn the iban carrier (nor any other).
+	if cs := classifyCarriers("iban_valid", "boolean", "whether the IBAN is valid"); len(cs) != 0 {
+		t.Errorf("boolean field must earn no carrier, got %v", cs)
+	}
+}
+
+func TestJudgeBridge_TypeGates(t *testing.T) {
+	// Producer emits bool iban_valid (+ a plain string); consumer wants a
+	// string iban. Must NOT be "bridged" — the observed live false positive.
+	prod := mkPorts(t, `
+message POut { bool iban_valid = 1; string note = 2; }
+message PIn { string q = 1; }
+`, "PIn", "POut", "h/p/A@1")
+	cons := mkPorts(t, `
+message CIn { string iban = 1; }
+message COut { string r = 1; }
+`, "CIn", "COut", "h/p/B@1")
+	if bc := judgeBridge(prod, cons); bc.Verdict != "plausible" {
+		t.Errorf("bool iban_valid -> string iban must not bridge, got %+v", bc)
+	}
+
+	// Both ends earn "instant", but string ISO output cannot feed an int64
+	// unix field without conversion: pairing must be type-compatible.
+	isoProd := mkPorts(t, `
+message POut { string created_at = 1; }
+message PIn { string q = 1; }
+`, "PIn", "POut", "h/p/C@1")
+	unixCons := mkPorts(t, `
+message CIn { int64 timestamp = 1; string label = 2; }
+message COut { string r = 1; }
+`, "CIn", "COut", "h/p/D@1")
+	if bc := judgeBridge(isoProd, unixCons); bc.Verdict == "bridged" {
+		t.Errorf("string instant -> integer instant must not claim bridged, got %+v", bc)
+	}
 }
 
 func TestWalkOutputsAndFeedableInputs(t *testing.T) {
