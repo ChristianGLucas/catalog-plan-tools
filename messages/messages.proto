@@ -187,6 +187,9 @@ message CheckBridgesInput {
   // PlanResult.error from the assemble step, carried through verbatim (bridge-stage errors are
   // appended after it).
   string error = 8;
+  // The original task description, forwarded from the flow input ("" when the caller has none).
+  // Used only to name and document the emitted skeleton_yaml — it never affects any verdict.
+  string task = 9;
 }
 
 // The assembled build plan.
@@ -230,4 +233,15 @@ message PlanResult {
   // blocked — feasible is forced false), "unknown" (at least one pair unverifiable and none
   // blocked). Older v0 PlanResults predate this field and omit it entirely.
   string bridge_status = 10;
+  // A draft flow.yaml STARTING POINT rendered from the matched picks and bridge verdicts: one node
+  // per matched step, an input_facade stub mirroring the first pick's published input fields
+  // (names, types, descriptions), a proposed edge per adjacent matched pair — a "bridged" pair's
+  // adapter maps the carrier pairing named in via; a "plausible" pair's adapter proposes the
+  // closest type-compatible pairing under a "TODO(planner)" marker — and comments marking gaps and
+  // blocked/unverifiable edges. Emitted by CheckBridges whenever the plan has at least one matched
+  // step; "" from AssemblePlan and "" when nothing matched. The caller owns verifying every
+  // adapter (especially TODO(planner) markers), adding @flow_input edges for interior-node fields,
+  // and any output_facade — as emitted, the response contract is the terminal node's own output
+  // message. Feed it to `axiom flow validate` and refine from there.
+  string skeleton_yaml = 11;
 }

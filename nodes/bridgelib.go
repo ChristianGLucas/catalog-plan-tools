@@ -314,11 +314,16 @@ func protoJSONType(t string, isMessage bool) string {
 }
 
 // portLeaf is one classified schema field: a producer output leaf (dotted
-// path) or a consumer top-level input field.
+// path) or a consumer top-level input field. ptyp/desc/repeated carry the raw
+// proto surface through for the skeleton renderer's facade stub; the verdict
+// logic reads only path/jtype/carriers.
 type portLeaf struct {
 	path     string
 	jtype    string
 	carriers []string
+	ptyp     string // raw proto type token ("string", "int64", ...)
+	desc     string // the field's leading-comment documentation
+	repeated bool
 }
 
 // walkOutputs deep-walks a message's fields — every leaf is pickable by an
@@ -345,7 +350,8 @@ func walkOutputs(msgs map[string][]protoField, msgName string) []portLeaf {
 			}
 			jt := protoJSONType(f.typ, false)
 			// Producer leaves: NAME-only carrier awards (see classifyCarriers).
-			out = append(out, portLeaf{path: path, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc, false)})
+			out = append(out, portLeaf{path: path, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc, false),
+				ptyp: f.typ, desc: f.desc, repeated: f.repeated})
 		}
 	}
 	rec(msgName, "", 0, map[string]bool{})
@@ -364,7 +370,8 @@ func feedableInputs(msgs map[string][]protoField, msgName string) []portLeaf {
 		}
 		jt := protoJSONType(f.typ, false)
 		// Consumer inputs: name OR description evidence (see classifyCarriers).
-		out = append(out, portLeaf{path: f.name, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc, true)})
+		out = append(out, portLeaf{path: f.name, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc, true),
+			ptyp: f.typ, desc: f.desc, repeated: f.repeated})
 	}
 	return out
 }

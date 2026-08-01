@@ -58,6 +58,7 @@ func TestCheckBridges_BridgedEndToEnd(t *testing.T) {
 
 	in := &gen.CheckBridgesInput{
 		Feasible: true, PlanBasis: "decomposed", MatchedCount: 2, StepCount: 2, Coverage: 1,
+		Task: "Fetch and render a page",
 		Steps: []*gen.PlanStep{
 			matchedStep("fetch the page", "h/fetch-tools", "Fetch", "1.0.0"),
 			matchedStep("render it", "h/render-tools", "Render", "1.0.0"),
@@ -70,6 +71,21 @@ func TestCheckBridges_BridgedEndToEnd(t *testing.T) {
 	if !out.Feasible || out.BridgeStatus != "bridged" || len(out.Bridges) != 1 {
 		t.Fatalf("expected feasible bridged plan, got feasible=%v status=%q bridges=%d",
 			out.Feasible, out.BridgeStatus, len(out.Bridges))
+	}
+	// v2: the skeleton is rendered from the picks, the bridged pairing, and
+	// the first pick's fetched input schema.
+	for _, want := range []string{
+		"name: your-handle/fetch-and-render-a-page",
+		"input_facade:",
+		"- alias: fetch",
+		"- alias: render",
+		"from: '@flow_input'",
+		"q: q",
+		"target_url: download_url",
+	} {
+		if !strings.Contains(out.SkeletonYaml, want) {
+			t.Errorf("skeleton_yaml missing %q:\n%s", want, out.SkeletonYaml)
+		}
 	}
 	b := out.Bridges[0]
 	if b.Verdict != "bridged" || !b.Compatible || b.Via != "url: download_url -> target_url" {
@@ -154,7 +170,9 @@ func TestCheckBridges_FetchFailureIsUnknownNotInfeasible(t *testing.T) {
 }
 
 func TestCheckBridges_NoPairsAndPassThrough(t *testing.T) {
-	nodes.SetPlanBaseForTest("http://127.0.0.1:1") // must never be contacted
+	// Unreachable registry: verdicts must not be invented, and the skeleton
+	// must degrade honestly (no facade mirror) rather than vanish.
+	nodes.SetPlanBaseForTest("http://127.0.0.1:1")
 
 	// Single matched step: nothing to check, everything passes through.
 	single := &gen.CheckBridgesInput{
@@ -170,6 +188,13 @@ func TestCheckBridges_NoPairsAndPassThrough(t *testing.T) {
 	if out.BridgeStatus != "no_pairs" || !out.Feasible || out.PlanBasis != "fallback" ||
 		out.Error != "decompose: no key" || len(out.Gaps) != 1 || out.MatchedCount != 1 {
 		t.Errorf("pass-through broken: %+v", out)
+	}
+	// A single matched pick still yields a skeleton; with the registry down
+	// the facade cannot be mirrored and must say so instead of being invented.
+	if !strings.Contains(out.SkeletonYaml, "- alias: x") ||
+		!strings.Contains(out.SkeletonYaml, "could not be mirrored") ||
+		strings.Contains(out.SkeletonYaml, "input_facade:") {
+		t.Errorf("degraded skeleton wrong:\n%s", out.SkeletonYaml)
 	}
 
 	// A gap BETWEEN two matched steps breaks adjacency: no pair is checked —
@@ -189,6 +214,10 @@ func TestCheckBridges_NoPairsAndPassThrough(t *testing.T) {
 	if out.BridgeStatus != "no_pairs" || len(out.Bridges) != 0 {
 		t.Errorf("gap-separated picks must not be paired: %+v", out)
 	}
+	if !strings.Contains(out.SkeletonYaml, "NO catalog match") ||
+		!strings.Contains(out.SkeletonYaml, "missing capability") {
+		t.Errorf("gap must surface in the skeleton:\n%s", out.SkeletonYaml)
+	}
 
 	// Empty input restores the plan_basis sentinel.
 	out, err = nodes.CheckBridges(context.Background(), newTestContext(t), &gen.CheckBridgesInput{})
@@ -197,6 +226,9 @@ func TestCheckBridges_NoPairsAndPassThrough(t *testing.T) {
 	}
 	if out.PlanBasis != "none" || out.BridgeStatus != "no_pairs" {
 		t.Errorf("empty input must yield none/no_pairs, got basis=%q status=%q", out.PlanBasis, out.BridgeStatus)
+	}
+	if out.SkeletonYaml != "" {
+		t.Errorf("nothing matched — skeleton must be empty, got:\n%s", out.SkeletonYaml)
 	}
 }
 
