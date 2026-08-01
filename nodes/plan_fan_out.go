@@ -45,6 +45,15 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 		out.FanoutCol = defaultFanoutCol
 	}
 
+	// Refuse to fan out for a task the caller KNOWS was blank — an LLM
+	// decomposer handed an empty task cheerfully invents generic steps
+	// (the phantom-plan class found live in v0), and here each invented
+	// step would mint a real appended node.
+	if input.GetTaskBlank() {
+		out.Error = "BLANK_TASK: the original task text was blank; refusing to fan out over invented steps"
+		return out, nil
+	}
+
 	// Resolve the queries with SearchSteps' exact precedence and defensive
 	// JSON parsing, so the flow can feed raw LLM text straight in.
 	switch {

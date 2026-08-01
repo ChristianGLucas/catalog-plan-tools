@@ -202,3 +202,17 @@ func TestPlanFanOut_CapTruncates(t *testing.T) {
 		t.Fatalf("cap must truncate to 16 with attribution: appended=%d err=%q", got.Appended, got.Error)
 	}
 }
+
+// The v0 phantom-plan guard: a blank task must refuse to fan out even when
+// upstream invented steps for it.
+func TestPlanFanOut_BlankTaskRefusesToFanOut(t *testing.T) {
+	ax := &fanoutTestContext{t: t, reflection: fanoutGraph(1), mutation: &fanoutRecorder{}}
+	got, err := nodes.PlanFanOut(context.Background(), ax,
+		&gen.FanOutRequest{Queries: []string{"invented step one", "invented step two"}, TaskBlank: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mutated || len(ax.mutation.nodes) != 0 || !strings.HasPrefix(got.Error, "BLANK_TASK") {
+		t.Fatalf("blank task must refuse to fan out: %+v", got)
+	}
+}

@@ -44,6 +44,10 @@ message FanOutRequest {
   int32 max_alternatives = 5;
   // Forwarded to every cell: minimum score to count the step matched. 0 -> 0.45.
   double threshold = 6;
+  // Set true by a caller who KNOWS the original task text was blank — refuses
+  // to fan out even when an upstream LLM invented steps for the empty task
+  // (the phantom-plan defect class found live in v0 of the sync planner).
+  bool task_blank = 7;
 }
 
 // Output of PlanFanOut AND the input every appended search cell receives over
