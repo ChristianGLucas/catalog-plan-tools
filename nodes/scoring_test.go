@@ -71,6 +71,12 @@ func keyedContext(t *testing.T) *testContext {
 	return c
 }
 
+const (
+	basisJudgeName    = "judge"
+	basisSemanticName = "semantic"
+	basisLexicalName  = "lexical"
+)
+
 const xmlLinksQuery = "extract links from XML elements"
 
 // semanticPool is the golden set's headline case as retrieval actually returns
@@ -346,5 +352,40 @@ func TestScoring_UnparseableJudgeOutputDegrades(t *testing.T) {
 	}
 	if !strings.Contains(step.GetScoringError(), "judge:") {
 		t.Fatalf("the parse failure must be attributed: %q", step.GetScoringError())
+	}
+}
+
+// The per-basis thresholds are the load-bearing calibration of the whole
+// stack: they are what makes a "matched" verdict mean the same thing whichever
+// stage ranked the step. Pinned here with the live golden-set evidence that
+// produced them (testdata/golden.json, run 2026-08-01 against the deployed
+// 0.7.0 node), so a future edit has to argue with the data.
+func TestScoring_ThresholdsSitInTheMeasuredGaps(t *testing.T) {
+	// Observed on the golden set — the highest score a NO-MATCH case reached,
+	// and the lowest a correct pick reached. The threshold must separate them.
+	for _, tc := range []struct {
+		basis           string
+		worstNoMatch    float64 // must stay UNMATCHED
+		weakestTruePick float64 // must be MATCHED
+	}{
+		// judge: payroll 0.250 / book-flight 0.180 vs weakest correct 0.720
+		{basisJudgeName, 0.250, 0.720},
+		// semantic: payroll 0.275 / book-flight 0.222 vs weakest correct 0.438
+		{basisSemanticName, 0.275, 0.438},
+		// lexical: payroll 0.252 / book-flight 0.200 vs weakest correct 0.574
+		{basisLexicalName, 0.252, 0.574},
+	} {
+		th := nodes.ThresholdFor(tc.basis)
+		if tc.worstNoMatch >= th {
+			t.Fatalf("%s: threshold %.2f would MATCH a no-real-match case scoring %.3f — the planner would become a confident liar", tc.basis, th, tc.worstNoMatch)
+		}
+		if tc.weakestTruePick < th {
+			t.Fatalf("%s: threshold %.2f would REJECT a correct pick scoring %.3f", tc.basis, th, tc.weakestTruePick)
+		}
+	}
+	// An unknown basis must fall back to the strictest historical default
+	// rather than silently matching everything.
+	if nodes.ThresholdFor("something-new") != nodes.ThresholdFor(basisLexicalName) {
+		t.Fatalf("an unrecognised basis must use the lexical default")
 	}
 }

@@ -29,6 +29,11 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 		LlmError:        strings.TrimSpace(input.GetLlmError()),
 		TaskBlank:       input.GetTaskBlank(),
 		Task:            input.GetTask(),
+		// The scoring knobs ride the plan for the same reason every other knob
+		// does: a cell's only inbound edge is the broadcast from this node, so
+		// anything the scoring stack needs has to travel on FanOutPlan.
+		Model:       input.GetModel(),
+		ScoringMode: input.GetScoringMode(),
 	}
 
 	// Refuse to fan out for a task the caller KNOWS was blank — an LLM

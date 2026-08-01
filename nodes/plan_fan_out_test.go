@@ -333,6 +333,8 @@ func TestPlanFanOut_EchoesBroadcastKnobs(t *testing.T) {
 		Threshold:       0.6,
 		LlmError:        "anthropic: truncated response",
 		Task:            "verify an IBAN and look up its bank",
+		Model:           "claude-sonnet-4-5",
+		ScoringMode:     "semantic",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -350,6 +352,12 @@ func TestPlanFanOut_EchoesBroadcastKnobs(t *testing.T) {
 	// there, so the task text can only reach the terminal from here.
 	if got.Task != "verify an IBAN and look up its bank" {
 		t.Fatalf("the task text must be echoed for nodes downstream of the fork: %q", got.Task)
+	}
+	// The scoring knobs travel the same road: a cell's only inbound edge is
+	// this broadcast, so an un-echoed knob is a knob that silently does
+	// nothing (live-reproduced — scoring_mode=lexical still judged).
+	if got.Model != "claude-sonnet-4-5" || got.ScoringMode != "semantic" {
+		t.Fatalf("the scoring knobs must ride the plan to the cells: model=%q scoring_mode=%q", got.Model, got.ScoringMode)
 	}
 }
 
