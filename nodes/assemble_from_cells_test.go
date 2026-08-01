@@ -93,7 +93,7 @@ func TestFanOutPathMatchesBatchPath_AtNonDefaultMaxAlternatives(t *testing.T) {
 
 	// 1 is the sharpest case: the pre-fix code returned ZERO alternatives.
 	for _, maxAlt := range []int32{1, 2, 10} {
-		batchSearch, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{Queries: queries})
+		batchSearch, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{Queries: queries, ScoringMode: "lexical"})
 		if err != nil {
 			t.Fatalf("maxAlt=%d: %v", maxAlt, err)
 		}
@@ -108,7 +108,7 @@ func TestFanOutPathMatchesBatchPath_AtNonDefaultMaxAlternatives(t *testing.T) {
 		var echo *gen.FanOutCell
 		for row := range queries {
 			out, err := nodes.SearchStepAt(context.Background(), cellAt(t, 3, int32(row)),
-				&gen.FanOutPlan{Queries: queries, FanoutCol: 3, MaxAlternatives: maxAlt})
+				&gen.FanOutPlan{Queries: queries, FanoutCol: 3, MaxAlternatives: maxAlt, ScoringMode: "lexical"})
 			if err != nil {
 				t.Fatalf("maxAlt=%d row=%d: %v", maxAlt, row, err)
 			}

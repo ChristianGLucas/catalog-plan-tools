@@ -59,6 +59,13 @@ func cellToStep(c *gen.CellResult) *gen.StepCandidates {
 		Candidates: src.GetCandidates(),
 		Relaxed:    src.GetRelaxed(),
 		Error:      src.GetError(),
+		// The scoring basis and its degradation MUST survive the projection:
+		// without them the fan-out plan would silently lose which stage ranked
+		// each step, and assemble would fall back to the lexical threshold for
+		// a semantically-scored step — a different verdict from the batch path
+		// on identical results.
+		ScoreBasis:   src.GetScoreBasis(),
+		ScoringError: src.GetScoringError(),
 	}
 	if out.Query == "" {
 		out.Query = c.GetQuery()

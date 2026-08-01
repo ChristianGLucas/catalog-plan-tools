@@ -52,10 +52,11 @@ type assembleParams struct {
 }
 
 func assemblePlanCore(p assembleParams) *gen.PlanResult {
-	threshold := p.threshold
-	if threshold <= 0 {
-		threshold = defaultThreshold
-	}
+	// A caller-supplied threshold applies to whichever basis produced the
+	// ranking; without one, each step uses the threshold calibrated for its
+	// OWN basis, because a 0.5 cosine similarity and a 0.5 lexical word
+	// fraction mean completely different things.
+	callerThreshold := p.threshold
 	maxAlt := int(p.maxAlternatives)
 	if maxAlt <= 0 {
 		maxAlt = 3
@@ -118,7 +119,16 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 	result := &gen.PlanResult{PlanBasis: basis, StepCount: int32(len(basisSteps)), BridgeStatus: "unchecked"}
 	matched := 0
 	for _, sc := range basisSteps {
-		ps := &gen.PlanStep{Description: sc.GetQuery()}
+		ps := &gen.PlanStep{Description: sc.GetQuery(), ScoreBasis: sc.GetScoreBasis()}
+		threshold := callerThreshold
+		if threshold <= 0 {
+			threshold = thresholdFor(sc.GetScoreBasis())
+		}
+		// A scoring stage that fell short is attributed but never fatal: the
+		// step still has a plan, ranked one stage weaker, and says which.
+		if se := sc.GetScoringError(); se != "" {
+			errParts = append(errParts, fmt.Sprintf("scoring: %s: %s", sc.GetQuery(), se))
+		}
 		if sc.GetError() != "" {
 			ps.Error = sc.GetError()
 			errParts = append(errParts, fmt.Sprintf("search: %s: %s", sc.GetQuery(), sc.GetError()))
@@ -134,6 +144,9 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 				ps.Package = best.Package
 				ps.Version = best.Version
 				ps.NodeDescription = best.Description
+				// The judge's justification for THIS pick — the plan's
+				// user-visible "why", not just a number.
+				ps.PickReason = best.GetPickReason()
 				for _, c := range sc.GetCandidates() {
 					if c == best || len(ps.Alternatives) >= maxAlt {
 						continue
@@ -155,6 +168,7 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 	result.MatchedCount = int32(matched)
 	result.Coverage = float64(matched) / float64(len(basisSteps))
 	result.Feasible = matched == len(basisSteps)
+	result.ScoreBasis = aggregateBasis(result.Steps)
 	result.Error = strings.Join(errParts, "; ")
 	return result
 }

@@ -25,6 +25,18 @@ message SearchStepsInput {
   string query = 3;
   // Max candidates returned per step. 0 means the default of 5.
   int32 limit = 4;
+  // Anthropic model id for the judge rerank. Empty resolves to the package default
+  // ("claude-haiku-4-5"). Consulted only when an ANTHROPIC_API_KEY secret is configured for the
+  // invoking tenant; without one the step ranks semantically and says so in scoring_error.
+  string model = 5;
+  // Pin the scoring stack instead of using the best stage available:
+  //   ""         auto — judge, degrading to semantic, degrading to lexical (the default)
+  //   "judge"    same as auto, but a missing key/LLM failure is still only attributed, never fatal
+  //   "semantic" retrieval only, no LLM call (deterministic, no key needed, no per-call cost)
+  //   "lexical"  the legacy word-overlap path only (offline-equivalent, fully deterministic)
+  // Anything else is treated as auto. Exists so a caller can trade result quality for determinism
+  // or cost deliberately — and so the scoring stack's accuracy can be measured stage by stage.
+  string scoring_mode = 6;
 }
 
 // Input for PlanFanOut: the decomposed steps to fan out over, plus the search
@@ -62,6 +74,12 @@ message FanOutRequest {
   // skeleton renderer in CheckBridges) can only be fed from a node that runs
   // in the child. This is that carrier.
   string task = 9;
+  // Forwarded to every cell: Anthropic model id for the judge rerank
+  // ("" -> the package default).
+  string model = 10;
+  // Forwarded to every cell: pin the scoring stack ("" / "judge" / "semantic" /
+  // "lexical"), same meaning as SearchStepsInput.scoring_mode.
+  string scoring_mode = 11;
 }
 
 // Output of PlanFanOut AND the input every search cell receives — the
@@ -114,6 +132,10 @@ message FanOutPlan {
   // presented as complete (R19 MINOR-2). Clauses put here ride the cells'
   // echo into the join and lead the assembled plan's error field.
   string plan_error = 11;
+  // Broadcast to every cell: the Anthropic model id the judge rerank uses.
+  string model = 12;
+  // Broadcast to every cell: which scoring stage to pin, if any.
+  string scoring_mode = 13;
 }
 
 // What one fan-out cell produced: which row/step it owns and the scored
@@ -202,18 +224,40 @@ message Candidate {
   string version = 3;
   // The node's published description (may be empty if the package author omitted one).
   string description = 4;
-  // Locally computed relevance in [0,1]: the weighted fraction of the query's informative words
-  // (stopwords dropped, node names split on case) found in this candidate's name + package +
-  // description. Domain-specific words ("iban", "xml", "checksum") carry full weight; generic
-  // capability verbs and data-shape words ("parse", "validate", "details", "document", "schema")
-  // carry a reduced weight, and a candidate that matches NONE of the query's domain-specific
-  // words has its score halved — so generic-word overlap alone cannot clear the 0.45 match
-  // threshold for any realistic query. A domain word the candidate mentions only inside an
-  // unrelated hyphenated compound (e.g. "qr" appearing solely in "QR-IBAN" for a QR-code query)
-  // counts as generic, not as a domain match. This is a lexical measure computed by this node, NOT a
-  // platform ranking signal — the platform's search API returns no thresholdable score today.
-  // 1.0 still means every informative query word matched.
+  // Relevance in [0,1] — ALWAYS read it together with score_basis, which says what produced it
+  // and therefore what it means:
+  //
+  //   "judge"    an LLM's calibrated 0-1 confidence that this node covers the step. The strongest
+  //              signal: it reads the node's description against the step rather than matching
+  //              words, so it separates a near-miss in the right domain from a real fit.
+  //   "semantic" the platform hybrid-search route's cosine similarity between the step's embedding
+  //              and the node's (also mirrored on semantic_similarity). Good recall, coarse
+  //              ranking: it surfaces synonym phrasings lexical search never finds, but it cannot
+  //              reliably order two nodes from the same package.
+  //   "lexical"  the locally computed weighted fraction of the query's informative words (stopwords
+  //              dropped, node names split on case) found in this candidate's name + package +
+  //              description. Domain-specific words ("iban", "xml", "checksum") carry full weight;
+  //              generic capability verbs and data-shape words ("parse", "validate", "details",
+  //              "document", "schema") carry a reduced weight, and a candidate matching NONE of the
+  //              query's domain words has its score halved. A domain word mentioned only inside an
+  //              unrelated hyphenated compound (e.g. "qr" solely in "QR-IBAN" for a QR-code query)
+  //              counts as generic. 1.0 means every informative query word matched.
+  //
+  // The three scales are NOT comparable to each other — a 0.5 cosine similarity is a strong match
+  // while a 0.5 lexical fraction is weak, which is why the matched/unmatched threshold is
+  // calibrated per basis. None of them is a platform ranking; they are evidence.
   double score = 5;
+  // The platform hybrid-search route's cosine similarity for this candidate, kept verbatim even
+  // after the judge reranks (so a caller can see retrieval and judgement separately). 0 when the
+  // candidate came from the lexical fallback.
+  double semantic_similarity = 6;
+  // What produced `score`: "lexical", "semantic" or "judge". Never empty on a candidate this
+  // package produced.
+  string score_basis = 7;
+  // One line from the judge on WHY this node fits the step, set on the top-ranked candidate of a
+  // judged step. Empty on every other candidate and on every unjudged basis. This is the plan's
+  // user-visible justification — read it before wiring the pick.
+  string pick_reason = 8;
 }
 
 // The candidates found for one step's query.
@@ -224,11 +268,21 @@ message StepCandidates {
   // nothing for the query or any of its relaxed keyword variants — a genuine "no match" signal.
   repeated Candidate candidates = 2;
   // True when the full-phrase search returned nothing and these candidates came from relaxed
-  // per-keyword searches instead — treat them with more skepticism than a phrase hit.
+  // per-keyword searches instead — treat them with more skepticism than a phrase hit. Only the
+  // lexical basis relaxes; semantic retrieval has no phrase/keyword distinction.
   bool relaxed = 3;
   // Non-empty when the search API could not be reached for this query (transport/HTTP failure).
   // An unreachable search is NOT a "no match": candidates is empty but nothing was actually ruled out.
   string error = 4;
+  // Which stage of the scoring stack ranked this step: "judge" (retrieval + LLM rerank),
+  // "semantic" (retrieval only) or "lexical" (the word-overlap fallback). The matched/unmatched
+  // threshold is calibrated per basis, so this is what makes `score` interpretable.
+  string score_basis = 5;
+  // Why the scoring stack fell short of the best stage, e.g. "judge: no ANTHROPIC_API_KEY
+  // configured; ranking semantically" or "semantic: <transport detail>; ranking lexically".
+  // Empty when the requested stage ran. A degraded stage NEVER fails the step — the plan is still
+  // produced, one stage weaker, and says so here.
+  string scoring_error = 6;
 }
 
 // Per-step search results, in input order.
@@ -291,6 +345,12 @@ message PlanStep {
   // Non-empty when this step's catalog search transport-failed (copied from the search result).
   // Such a step is unmatched but NOT a gap — nothing was ruled out. Empty otherwise.
   string error = 9;
+  // Which stage of the scoring stack ranked this step ("judge" / "semantic" / "lexical"), copied
+  // from its search result. `score` and the matched verdict are only interpretable against it.
+  string score_basis = 10;
+  // The judge's one-line reason for this pick, when the step was judged. Empty otherwise. This is
+  // the plan's justification in the planner's own words — the thing to read before wiring a pick.
+  string pick_reason = 11;
 }
 
 // A step the catalog cannot cover — the "what to build" output.
@@ -357,6 +417,9 @@ message CheckBridgesInput {
   // The original task description, forwarded from the flow input ("" when the caller has none).
   // Used only to name and document the emitted skeleton_yaml — it never affects any verdict.
   string task = 9;
+  // PlanResult.score_basis from the assemble step, carried through so the final plan still reports
+  // how it was scored.
+  string score_basis = 10;
 }
 
 // The assembled build plan.
@@ -411,4 +474,12 @@ message PlanResult {
   // and any output_facade — as emitted, the response contract is the terminal node's own output
   // message. Feed it to `axiom flow validate` and refine from there.
   string skeleton_yaml = 11;
+  // How this plan's picks were ranked: "judge" (semantic retrieval + LLM rerank
+  // — the strongest), "semantic" (retrieval only), "lexical" (the word-overlap
+  // fallback), "mixed" when steps landed on different stages, or "" when there
+  // was nothing to score. Read it with error, which carries a "scoring: ..."
+  // clause for anything below the stage that was asked for. Every step's own
+  // basis is on PlanStep.score_basis, and the matched/unmatched threshold is
+  // calibrated per basis — the three scales are not comparable.
+  string score_basis = 12;
 }

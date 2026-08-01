@@ -28,7 +28,7 @@ func cellAt(t *testing.T, col, row int32) *fanoutTestContext {
 }
 
 func cellPlan(queries ...string) *gen.FanOutPlan {
-	return &gen.FanOutPlan{Queries: queries, FanoutCol: 3}
+	return &gen.FanOutPlan{Queries: queries, FanoutCol: 3, ScoringMode: "lexical"}
 }
 
 // only returns the single CellResult the wrapper must always carry.
@@ -98,7 +98,7 @@ func TestSearchStepAt_EchoesTheBroadcastKnobs(t *testing.T) {
 // EVERY member edge, so a cell that produced nothing still has to compose.
 func TestSearchStepAt_EchoesKnobsOnTheRefusalPaths(t *testing.T) {
 	ax := cellAt(t, 3, 0)
-	out, err := nodes.SearchStepAt(context.Background(), ax, &gen.FanOutPlan{LlmError: "anthropic: no response", TaskBlank: true, Threshold: 0.7})
+	out, err := nodes.SearchStepAt(context.Background(), ax, &gen.FanOutPlan{ScoringMode: "lexical", LlmError: "anthropic: no response", TaskBlank: true, Threshold: 0.7})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

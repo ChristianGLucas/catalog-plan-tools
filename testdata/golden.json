@@ -1,0 +1,127 @@
+{
+  "_comment": [
+    "The planner's accuracy golden set. Each case is one capability step a real task decomposes",
+    "into, plus the catalog node that actually covers it. It is BOTH a committed fixture (see",
+    "goldenset_test.go, which checks the set's shape and category coverage offline) AND the input",
+    "to the live oracle (testdata/run_golden_live.py), which scores the DEPLOYED node three times",
+    "per case — scoring_mode lexical, semantic and auto — and reports one accuracy per stage.",
+    "Accuracy must be MONOTONE: judge >= semantic >= lexical.",
+    "",
+    "expect_package/expect_node: the top pick that counts as correct. expect_no_match: the step",
+    "must come back UNMATCHED (these are the calibration guard — a stack that over-matches would",
+    "score 100% on the positive cases and turn the planner into a confident liar).",
+    "Written 2026-08-01 against the live catalog."
+  ],
+  "cases": [
+    {
+      "id": "xml-links",
+      "category": "known-failure",
+      "query": "extract links from XML elements",
+      "expect_package": "christiangeorgelucas/xpath-tools",
+      "expect_node": "ExtractAttribute",
+      "note": "THE shipped failure (exec 5b4f4ab6b0e0bbf83782fa8aead6c64d): lexical top-picked legislation-gov-uk-connector/SearchLegislation on the words 'link'/'XML'. Semantic surfaces xpath-tools but ranks ExtractText above ExtractAttribute; only the judge knows a link in XML is an ATTRIBUTE (href/xlink:href), not element text. This case is the reason the judge stage exists."
+    },
+    {
+      "id": "synonym-shrink-image",
+      "category": "synonym-recall",
+      "query": "make a picture smaller without changing what it looks like",
+      "expect_package": "christiangeorgelucas/image-tools",
+      "expect_node": "Resize",
+      "note": "Not one word of the query appears in the node name or its description ('picture'/'smaller' vs 'image'/'resize'). Lexical retrieval cannot surface this at all."
+    },
+    {
+      "id": "synonym-strip-formatting",
+      "category": "synonym-recall",
+      "query": "remove the styling tags from a web page and keep the words",
+      "expect_package": "christiangeorgelucas/html-tools",
+      "expect_node": "ExtractText",
+      "note": "Second synonym-recall case: 'styling tags'/'keep the words' vs 'HTML'/'text content'."
+    },
+    {
+      "id": "trap-qr-iban",
+      "category": "wrong-domain-trap",
+      "query": "generate a QR code image for a payment link",
+      "expect_package": "christiangeorgelucas/qrserver-connector",
+      "expect_node": "GenerateQR",
+      "note": "Wrong-domain trap: iban-tools/IsQrIban shares the rare domain word 'QR' but detects a Swiss QR-IBAN — a payment-adjacent false friend. Lexical rewards the shared rare token."
+    },
+    {
+      "id": "trap-audio-onsets",
+      "category": "wrong-domain-trap",
+      "query": "convert event start times to another timezone",
+      "expect_package": "christiangeorgelucas/timeapi-io-connector",
+      "expect_node": "ConvertTimeZone",
+      "note": "Wrong-domain trap observed LIVE in a shipped 0.6.2 run: audio-tools/DetectOnsets scored 0.8955 on 'event start times' (onset = start of a musical event). Domain-blind word overlap at its worst."
+    },
+    {
+      "id": "nomatch-payroll",
+      "category": "no-real-match",
+      "query": "run monthly payroll and file the tax withholdings",
+      "expect_no_match": true,
+      "note": "Calibration guard: nothing in the catalog does payroll. The stack must return UNMATCHED so the planner emits a build-this gap, not a confident wrong pick."
+    },
+    {
+      "id": "nomatch-book-flight",
+      "category": "no-real-match",
+      "query": "book a commercial airline ticket and pay for it",
+      "expect_no_match": true,
+      "note": "Second calibration guard: transactional/side-effecting capability the catalog has no node for."
+    },
+    {
+      "id": "plain-iban-validate",
+      "category": "plain",
+      "query": "validate an IBAN checksum",
+      "expect_package": "christiangeorgelucas/iban-tools",
+      "expect_node": "ValidateIban",
+      "note": "Must not regress: lexical already gets this one right."
+    },
+    {
+      "id": "plain-vcard-parse",
+      "category": "plain",
+      "query": "parse a vCard contact file",
+      "expect_package": "christiangeorgelucas/vcard-tools",
+      "expect_node": "ParseVCard",
+      "note": "Must not regress."
+    },
+    {
+      "id": "plain-cron-describe",
+      "category": "plain",
+      "query": "describe what a cron expression means in plain English",
+      "expect_package": "christiangeorgelucas/cron-tools",
+      "expect_node": "DescribeCron",
+      "note": "Must not regress."
+    },
+    {
+      "id": "plain-semver-parse",
+      "category": "plain",
+      "query": "parse a semantic version string into major minor patch",
+      "expect_package": "christiangeorgelucas/semver-tools",
+      "expect_node": "Parse",
+      "note": "Must not regress."
+    },
+    {
+      "id": "discriminate-jwt-decode",
+      "category": "discrimination",
+      "query": "get just the payload claims out of a JWT, not the header, and do not verify it",
+      "expect_package": "christiangeorgelucas/jwt-tools",
+      "expect_node": "DecodeClaims",
+      "note": "Fine discrimination INSIDE one package: jwt-tools has EIGHT nodes whose descriptions all say some variant of 'claims ... WITHOUT checking the signature' (DecodeToken, ExtractClaim, ListClaimNames, ValidateClaims, DecodeClaims). Only reading 'just the payload, not the header' against each description separates DecodeClaims from DecodeToken. Word overlap cannot do this at all."
+    },
+    {
+      "id": "discriminate-url-parse",
+      "category": "discrimination",
+      "query": "split a URL into its host path and query parts",
+      "expect_package": "christiangeorgelucas/url-tools",
+      "expect_node": "ParseUrl",
+      "note": "Second intra-package discrimination case: ParseUrl vs NormalizeUrl vs ResolveUrl."
+    },
+    {
+      "id": "synonym-tabular-summary",
+      "category": "synonym-recall",
+      "query": "tell me how many rows are empty in a spreadsheet export",
+      "expect_package": "christiangeorgelucas/data-profiling-tools",
+      "expect_node": "ProfileTable",
+      "note": "Third synonym-recall case: 'spreadsheet export'/'how many rows are empty' vs 'CSV/TSV/JSON table'/'null counts'."
+    }
+  ]
+}

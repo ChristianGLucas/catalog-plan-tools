@@ -9,16 +9,22 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
 	gen "christiangeorgelucas/catalog-plan-tools/gen"
 )
 
-// searchBase is the public, unauthenticated lexical search route of the Axiom
-// registry (the semantic route requires a caller identity and is tenant-scoped,
-// so a marketplace node cannot use it). Overridden in tests.
+// searchBase is the public, unauthenticated LEXICAL search route of the Axiom
+// registry. It is the scoring stack's last resort, not its default: the
+// hybrid semantic route (retrievelib.go) is also public and anonymous —
+// an earlier comment here claimed it "requires a caller identity and is
+// tenant-scoped, so a marketplace node cannot use it", which was never true of
+// the POST /app/marketplace/search/semantic route this package now retrieves
+// from. This route returns no per-result score at all, which is why the
+// lexical basis has to compute one locally (scoreCandidate below); the
+// semantic route DOES return a thresholdable cosine similarity.
+// Overridden in tests.
 var searchBase = "https://api.axiomide.com/api/packages/search"
 
 var httpClient = &http.Client{Timeout: 10 * time.Second}
@@ -494,23 +500,4 @@ func parseQueriesJSON(raw string) ([]string, error) {
 		}
 	}
 	return nil, fmt.Errorf("no JSON query list found in %d bytes of text", len(raw))
-}
-
-// runSearches executes one search per query concurrently (bounded), preserving
-// input order in the result.
-func runSearches(ctx context.Context, queries []string, limit int) []*gen.StepCandidates {
-	steps := make([]*gen.StepCandidates, len(queries))
-	sem := make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	for i, q := range queries {
-		wg.Add(1)
-		go func(i int, q string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			steps[i] = searchOneQuery(ctx, q, limit)
-		}(i, q)
-	}
-	wg.Wait()
-	return steps
 }

@@ -43,7 +43,8 @@ func TestSearchSteps_PhraseHitScoresAndRanks(t *testing.T) {
 		},
 	})
 	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
-		Queries: []string{"validate IBAN checksum"},
+		ScoringMode: "lexical",
+		Queries:     []string{"validate IBAN checksum"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -75,7 +76,8 @@ func TestSearchSteps_RelaxesOnEmptyPhraseOnly(t *testing.T) {
 		"vcard": {apiRow("ParseVcard", "h/vcard-tools", "1.0.0", "Parse a vCard contact")},
 	})
 	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
-		Queries: []string{"parse vcard"},
+		ScoringMode: "lexical",
+		Queries:     []string{"parse vcard"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -95,7 +97,8 @@ func TestSearchSteps_RelaxesOnEmptyPhraseOnly(t *testing.T) {
 func TestSearchSteps_EmptyEverywhereIsCleanNoMatch(t *testing.T) {
 	fakeSearch(t, map[string][]map[string]string{})
 	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
-		Queries: []string{"quantum yodel basket"},
+		ScoringMode: "lexical",
+		Queries:     []string{"quantum yodel basket"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -169,7 +172,8 @@ func TestSearchSteps_TransportErrorPerStep(t *testing.T) {
 	t.Cleanup(func() { nodes.SetSearchBaseForTest("https://api.axiomide.com/api/packages/search") })
 
 	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
-		Queries: []string{"anything"},
+		ScoringMode: "lexical",
+		Queries:     []string{"anything"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -184,8 +188,8 @@ func TestSearchSteps_TransportErrorPerStep(t *testing.T) {
 
 func TestParseQueriesJSON_Variants(t *testing.T) {
 	cases := map[string][]string{
-		`["a b", "c d"]`:                                {"a b", "c d"},
-		`{"queries": ["x"]}`:                            {"x"},
+		`["a b", "c d"]`:     {"a b", "c d"},
+		`{"queries": ["x"]}`: {"x"},
 		`[{"description": "step one"}, {"q": "two"}]`:   {"step one", "two"},
 		"```\n[\"fenced\"]\n```":                        {"fenced"},
 		`noise before [{"query":"embedded"}] and after`: {"embedded"},
@@ -219,7 +223,8 @@ func TestSearchSteps_QueriesListDedupesLikeQueriesJson(t *testing.T) {
 		"validate iban": {apiRow("ValidateIban", "h/iban-tools", "1", "Validate an IBAN")},
 	})
 	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
-		Queries: []string{"validate iban", "  validate iban  ", "Validate IBAN", "   ", ""},
+		ScoringMode: "lexical",
+		Queries:     []string{"validate iban", "  validate iban  ", "Validate IBAN", "   ", ""},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -239,8 +244,9 @@ func TestSearchSteps_NegativeLimitFallsToDefault(t *testing.T) {
 	}
 	fakeSearch(t, map[string][]map[string]string{"convert units": rows})
 	got, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{
-		Queries: []string{"convert units"},
-		Limit:   -5,
+		ScoringMode: "lexical",
+		Queries:     []string{"convert units"},
+		Limit:       -5,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

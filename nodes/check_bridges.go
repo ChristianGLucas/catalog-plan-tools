@@ -21,6 +21,12 @@ func CheckBridges(ctx context.Context, ax axiom.Context, input *gen.CheckBridges
 		Steps:        input.Steps,
 		Gaps:         input.Gaps,
 		Error:        input.Error,
+		ScoreBasis:   input.GetScoreBasis(),
+	}
+	// A caller that hand-builds the input may omit the summary basis; the
+	// steps still carry their own, so re-derive rather than report nothing.
+	if out.ScoreBasis == "" {
+		out.ScoreBasis = aggregateBasis(input.GetSteps())
 	}
 	// plan_basis is a never-empty sentinel on every PlanResult this package
 	// emits; a caller invoking CheckBridges directly with a hand-built input
