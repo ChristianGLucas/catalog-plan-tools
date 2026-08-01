@@ -132,22 +132,36 @@ func parseVia(via string) (carrier, outPath, inField string, ok bool) {
 // different semantic types (a BIC is not an IBAN), so proposing them would
 // contradict the taxonomy this same package used for the verdict (R16 review
 // MAJOR — the first live plan wired iban: bic under the TODO marker).
+// Eligible pairings are ranked: both sides unlabeled (rank 0) beats one side
+// labeled (rank 1) — a guess into or out of an already-classified field is
+// weaker than one between plain fields — then shortest producer path, then
+// lexicographic path, then consumer declaration order.
 func proposePairing(from, to *nodePorts) (outPath, inField string, ok bool) {
+	bestRank, bestIdx := 0, 0
 	for _, ol := range from.outLeafs {
 		if ol.path == "error" || ol.repeated || strings.Contains(ol.path, "[]") {
 			continue
 		}
-		for _, inf := range to.inFields {
+		for idx, inf := range to.inFields {
 			if !jtypesCompatible(ol.jtype, inf.jtype) {
 				continue
 			}
 			if len(ol.carriers) > 0 && len(inf.carriers) > 0 && !carriersOverlap(ol.carriers, inf.carriers) {
 				continue // both labeled, differently — actively wrong, keep looking
 			}
-			if !ok || len(ol.path) < len(outPath) || (len(ol.path) == len(outPath) && ol.path < outPath) {
-				outPath, inField, ok = ol.path, inf.path, true
+			rank := 0
+			if len(ol.carriers) > 0 || len(inf.carriers) > 0 {
+				rank = 1
 			}
-			break // first eligible consumer field in declared order
+			better := !ok ||
+				rank < bestRank ||
+				(rank == bestRank && (len(ol.path) < len(outPath) ||
+					(len(ol.path) == len(outPath) && (ol.path < outPath ||
+						(ol.path == outPath && idx < bestIdx)))))
+			if better {
+				outPath, inField, ok = ol.path, inf.path, true
+				bestRank, bestIdx = rank, idx
+			}
 		}
 	}
 	return outPath, inField, ok
