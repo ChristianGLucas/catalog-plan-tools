@@ -70,23 +70,29 @@ func TestParseProtoMessages_FieldsCommentsNesting(t *testing.T) {
 }
 
 func TestClassifyCarriers(t *testing.T) {
-	if cs := classifyCarriers("download_url", "string", ""); len(cs) == 0 || cs[0] != "url" {
+	if cs := classifyCarriers("download_url", "string", "", false); len(cs) == 0 || cs[0] != "url" {
 		t.Errorf("name-based url carrier missed: %v", cs)
 	}
-	// Description evidence counts only on a compatible JSON type.
-	if cs := classifyCarriers("value", "string", "the IBAN to validate"); len(cs) != 1 || cs[0] != "iban" {
+	// Consumer side (allowDesc): description evidence counts, type-gated.
+	if cs := classifyCarriers("value", "string", "the IBAN to validate", true); len(cs) != 1 || cs[0] != "iban" {
 		t.Errorf("desc-based iban carrier missed: %v", cs)
 	}
-	if cs := classifyCarriers("value", "integer", "the IBAN to validate"); len(cs) != 0 {
+	if cs := classifyCarriers("value", "integer", "the IBAN to validate", true); len(cs) != 0 {
 		t.Errorf("desc match must be type-gated, got %v", cs)
 	}
-	if cs := classifyCarriers("note", "string", "freeform text about anything"); len(cs) != 0 {
+	if cs := classifyCarriers("note", "string", "freeform text about anything", true); len(cs) != 0 {
 		t.Errorf("freeform text must earn no carrier, got %v", cs)
 	}
 	// A boolean is ABOUT an iban, it does not CARRY one — live false positive:
 	// bool iban_valid must never earn the iban carrier (nor any other).
-	if cs := classifyCarriers("iban_valid", "boolean", "whether the IBAN is valid"); len(cs) != 0 {
+	if cs := classifyCarriers("iban_valid", "boolean", "whether the IBAN is valid", true); len(cs) != 0 {
 		t.Errorf("boolean field must earn no carrier, got %v", cs)
+	}
+	// Producer side (name-only): a description that MENTIONS an IBAN must not
+	// award the carrier — second live false positive ("the country code
+	// extracted from the IBAN" earned carrier iban for actual_country_code).
+	if cs := classifyCarriers("actual_country_code", "string", "The country code extracted from the IBAN, reported even if the IBAN fails validation.", false); len(cs) != 1 || cs[0] != "country_code" {
+		t.Errorf("producer desc mention must not award iban, got %v", cs)
 	}
 }
 
@@ -117,6 +123,28 @@ message COut { string r = 1; }
 `, "CIn", "COut", "h/p/D@1")
 	if bc := judgeBridge(isoProd, unixCons); bc.Verdict == "bridged" {
 		t.Errorf("string instant -> integer instant must not claim bridged, got %+v", bc)
+	}
+
+	// Live false positive #2: a producer output whose DESCRIPTION mentions an
+	// IBAN ("the country code extracted from the IBAN") must not bridge to a
+	// string iban input on the iban carrier.
+	ccProd := mkPorts(t, `
+message POut {
+  // The country code extracted from the IBAN, reported even if the IBAN fails validation.
+  string actual_country_code = 1;
+  bool matches = 2;
+}
+message PIn { string q = 1; }
+`, "PIn", "POut", "h/p/E@1")
+	ibanCons := mkPorts(t, `
+message CIn {
+  // The IBAN to parse.
+  string iban = 1;
+}
+message COut { string r = 1; }
+`, "CIn", "COut", "h/p/F@1")
+	if bc := judgeBridge(ccProd, ibanCons); bc.Verdict != "plausible" {
+		t.Errorf("desc-mention producer must not bridge on iban, got %+v", bc)
 	}
 }
 

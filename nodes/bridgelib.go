@@ -106,15 +106,21 @@ var carrierTier = func() map[string]int {
 	return m
 }()
 
-// classifyCarriers returns the carriers a field earns. High precision: the
-// field NAME matching is the strong signal, and a description match also
-// counts — but BOTH are gated on the carrier's compatible JSON types. This is
-// a deliberate tightening vs the offline engine's carriers.py (where a name
-// match ignores type): the engine discovers candidate compositions, but this
-// node renders VERDICTS, and a boolean named "iban_valid" is *about* an IBAN
-// without *carrying* one — awarding it the carrier produced a live
-// false-positive bridge (bool iban_valid -> string iban input).
-func classifyCarriers(name, jtype, desc string) []string {
+// classifyCarriers returns the carriers a field earns. All awards are gated
+// on the carrier's compatible JSON types (a boolean named "iban_valid" is
+// *about* an IBAN without *carrying* one — awarding it produced a live
+// false-positive bridge), and description evidence counts only when
+// allowDesc is set. Both gates deliberately tighten the offline engine's
+// carriers.py (name match ignores type there; desc always counts): the
+// engine discovers candidate compositions, but this node renders VERDICTS.
+//
+// allowDesc is the producer/consumer asymmetry: CONSUMER inputs are often
+// named generically ("value") with the description carrying the meaning
+// ("the IBAN to validate"), so desc evidence is kept; PRODUCER output
+// descriptions narrate context — "the country code extracted from the IBAN"
+// mentions an IBAN the field does not carry (a second live false positive) —
+// so producer leaves earn carriers by field NAME only.
+func classifyCarriers(name, jtype, desc string, allowDesc bool) []string {
 	name = strings.ToLower(name)
 	desc = strings.ToLower(desc)
 	var out []string
@@ -122,7 +128,7 @@ func classifyCarriers(name, jtype, desc string) []string {
 		if !d.types[jtype] {
 			continue
 		}
-		if d.nameRe.MatchString(name) || d.descRe.MatchString(desc) {
+		if d.nameRe.MatchString(name) || (allowDesc && d.descRe.MatchString(desc)) {
 			out = append(out, d.name)
 		}
 	}
@@ -334,7 +340,8 @@ func walkOutputs(msgs map[string][]protoField, msgName string) []portLeaf {
 				continue
 			}
 			jt := protoJSONType(f.typ, false)
-			out = append(out, portLeaf{path: path, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc)})
+			// Producer leaves: NAME-only carrier awards (see classifyCarriers).
+			out = append(out, portLeaf{path: path, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc, false)})
 		}
 	}
 	rec(msgName, "", 0, map[string]bool{})
@@ -352,7 +359,8 @@ func feedableInputs(msgs map[string][]protoField, msgName string) []portLeaf {
 			continue
 		}
 		jt := protoJSONType(f.typ, false)
-		out = append(out, portLeaf{path: f.name, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc)})
+		// Consumer inputs: name OR description evidence (see classifyCarriers).
+		out = append(out, portLeaf{path: f.name, jtype: jt, carriers: classifyCarriers(f.name, jt, f.desc, true)})
 	}
 	return out
 }
