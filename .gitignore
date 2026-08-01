@@ -6,3 +6,6 @@ gen/
 
 # Go
 *.test
+
+# oracle output, regenerated per run
+golden-results.json
