@@ -271,28 +271,45 @@ func TestPlanFanOut_CellWithoutJoinRefuses(t *testing.T) {
 	}
 }
 
-// Cells select their step by canvas row, so an authored cell off row 0 would
-// shift every step index. Refuse rather than plan a misaligned fan-out.
-func TestPlanFanOut_AuthoredCellMustStartAtRowZero(t *testing.T) {
+// The founder's layout change, at the emitter: an authored cell column that
+// starts at row 1 is LEGAL now, and growth appends BELOW it so the base — and
+// therefore every step index — is unchanged.
+func TestPlanFanOut_ColumnMayStartAtAnyRowAndGrowsBelowIt(t *testing.T) {
+	const base = int32(1)
 	ax := &fanoutTestContext{
 		t: t,
 		reflection: fanoutReflection{
 			nodes: []axiom.ReflectionNode{
-				{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, PackageVersion: "0.6.0", GridCol: 2, GridRow: 0},
-				{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.0", GridCol: 3, GridRow: 2},
-				{InstanceID: 3, Name: "AssembleFromCells", PackageName: selfPkg, PackageVersion: "0.6.0", GridCol: 4, GridRow: 0},
+				{InstanceID: 0, Name: "CreateMessage", PackageName: "christiangeorgelucas/anthropic-connector", GridCol: 1, GridRow: base},
+				{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, PackageVersion: "0.7.2", GridCol: 2, GridRow: 0},
+				{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.7.2", GridCol: 3, GridRow: base},
+				{InstanceID: 3, Name: "AssembleFromCells", PackageName: selfPkg, PackageVersion: "0.7.2", GridCol: 4, GridRow: base},
+				{InstanceID: 4, Name: "CheckBridges", PackageName: selfPkg, PackageVersion: "0.7.2", GridCol: 5, GridRow: 0},
 			},
-			edges:   []axiom.ReflectionEdge{{SrcInstance: 1, DstInstance: 2}, {SrcInstance: 2, DstInstance: 3}},
+			edges: []axiom.ReflectionEdge{
+				{SrcInstance: 0, DstInstance: 1}, {SrcInstance: 1, DstInstance: 2},
+				{SrcInstance: 2, DstInstance: 3}, {SrcInstance: 3, DstInstance: 4},
+			},
 			current: 1,
 		},
 		mutation: &fanoutRecorder{},
 	}
-	got, err := nodes.PlanFanOut(context.Background(), ax, &gen.FanOutRequest{Queries: []string{"a b", "c d"}})
+	got, err := nodes.PlanFanOut(context.Background(), ax,
+		&gen.FanOutRequest{Queries: []string{"step zero", "step one", "step two"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Mutated || len(ax.mutation.nodes) != 0 || !strings.HasPrefix(got.Error, "CELL_ROW_NOT_ZERO") {
-		t.Fatalf("an off-row-0 cell column must refuse: %+v", got)
+	if got.Error != "" || got.PlanError != "" {
+		t.Fatalf("a column starting at row %d is legal: error=%q plan_error=%q", base, got.Error, got.PlanError)
+	}
+	if !got.Mutated || got.Appended != 2 {
+		t.Fatalf("want mutated=true appended=2, got %+v", got)
+	}
+	for i, n := range ax.mutation.nodes {
+		wantRow := base + int32(i) + 1
+		if n.pos == nil || n.pos.GridCol != 3 || n.pos.GridRow != wantRow {
+			t.Fatalf("cell %d must land at (3,%d) — below the authored base, not at an absolute row — got %+v", i, wantRow, n.pos)
+		}
 	}
 }
 
@@ -472,17 +489,18 @@ func TestPlanFanOut_InternalClausesStayOffTheCallerChannel(t *testing.T) {
 	}
 }
 
-// R19 MINOR-6: a column whose lowest cell is off row 0 is MIS-AUTHORED. Before
-// the fix the grown guard ran first and blamed the lineage (ALREADY_GROWN) for
-// what is an authoring fault.
-func TestPlanFanOut_MisalignedColumnIsNotReportedAsAlreadyGrown(t *testing.T) {
+// A GAPPED cell column is the misalignment hazard that survives relative
+// indexing (the retired CELL_ROW_NOT_ZERO guard's real purpose): steps are
+// owned by offset from the column's base, so a hole means some step has no cell
+// and the assembled plan silently misses it. Rows 1 and 3 leave step 1 unowned.
+func TestPlanFanOut_GappedColumnRefusesAndTellsTheCaller(t *testing.T) {
 	ax := &fanoutTestContext{
 		t: t,
 		reflection: fanoutReflection{
 			nodes: []axiom.ReflectionNode{
 				{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 2, GridRow: 0},
-				{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 3, GridRow: 1},
-				{InstanceID: 5, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 3, GridRow: 2},
+				{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.7.2", GridCol: 3, GridRow: 1},
+				{InstanceID: 5, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.7.2", GridCol: 3, GridRow: 3},
 				{InstanceID: 3, Name: "AssembleFromCells", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 4, GridRow: 0},
 			},
 			edges: []axiom.ReflectionEdge{
@@ -500,15 +518,14 @@ func TestPlanFanOut_MisalignedColumnIsNotReportedAsAlreadyGrown(t *testing.T) {
 	if got.Mutated || len(ax.mutation.nodes) != 0 {
 		t.Fatalf("a misaligned column must not be grown: %+v", got)
 	}
-	if !strings.HasPrefix(got.Error, "CELL_ROW_NOT_ZERO") {
-		t.Fatalf("misalignment must be attributed as CELL_ROW_NOT_ZERO, got %q", got.Error)
+	if !strings.HasPrefix(got.Error, "CELL_ROW_GAP") {
+		t.Fatalf("a gapped column must be attributed as CELL_ROW_GAP, got %q", got.Error)
 	}
-	// R19 MINOR-7: refusing to grow is not enough. The misaligned cell still
-	// receives the plan and still feeds the join, so the caller would get a
-	// one-step plan of the WRONG step labelled plan_basis "decomposed". That
-	// has to reach them.
-	if !strings.HasPrefix(got.PlanError, "CELL_ROW_NOT_ZERO") {
-		t.Fatalf("CELL_ROW_NOT_ZERO must reach the caller via plan_error, got %q", got.PlanError)
+	// R19 MINOR-7: refusing to grow is not enough. The cells still receive the
+	// plan and still feed the join, so the caller would get a plan silently
+	// missing a step while presenting itself as complete. That has to reach them.
+	if !strings.HasPrefix(got.PlanError, "CELL_ROW_GAP") {
+		t.Fatalf("CELL_ROW_GAP must reach the caller via plan_error, got %q", got.PlanError)
 	}
 }
 

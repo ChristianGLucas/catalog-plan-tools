@@ -11,7 +11,7 @@ claim the scoring upgrade rests on:
 A stage is scored on the deployed node, not on a local reimplementation, so the
 numbers describe what a caller of the published planner actually gets.
 
-    python3 testdata/run_golden_live.py --axiom /path/to/axiom [--version 0.7.1]
+    python3 testdata/run_golden_live.py --axiom /path/to/axiom [--version 0.7.2]
 
 A case counts as correct when the step's TOP pick is the expected node, or —
 for an expect_no_match case — when the step comes back unmatched. Unmatched
@@ -81,7 +81,7 @@ def verdict(case, result):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--axiom", default=os.environ.get("AXIOM", "axiom"))
-    ap.add_argument("--version", default="0.7.1")
+    ap.add_argument("--version", default="0.7.2")
     ap.add_argument("--golden", default=os.path.join(os.path.dirname(__file__), "golden.json"))
     args = ap.parse_args()
 

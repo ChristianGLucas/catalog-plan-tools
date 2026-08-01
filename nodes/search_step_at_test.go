@@ -169,3 +169,76 @@ func TestSearchStepAt_ThresholdVerdict(t *testing.T) {
 		t.Fatalf("threshold knob must forward: %+v", got2)
 	}
 }
+
+// The founder's layout change, at the cell: the column is authored at row 1,
+// so the cell there owns step 0 — not queries[1]. Absolute indexing would have
+// silently searched the wrong step for every cell in the column.
+func TestSearchStepAt_StepIsRelativeToTheColumnBase(t *testing.T) {
+	fakeSearch(t, map[string][]map[string]string{
+		"parse a vcard": {apiRow("ParseVCard", "christiangeorgelucas/vcard-tools", "0.1.2", "Parse a vCard.")},
+	})
+	// Column based at row 1, exactly as flow-planner-fanout@0.4.0 authors it.
+	ax := &fanoutTestContext{
+		t: t,
+		reflection: fanoutReflection{
+			nodes: []axiom.ReflectionNode{
+				{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, GridCol: 2, GridRow: 0},
+				{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, GridCol: 3, GridRow: 1},
+			},
+			current: 2,
+		},
+		mutation: &fanoutRecorder{},
+	}
+	out, err := nodes.SearchStepAt(context.Background(), ax, cellPlan("parse a vcard", "second step", "third step"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := only(t, out)
+	if got.Row != 1 {
+		t.Fatalf("the cell must still report its CANVAS row: %+v", got)
+	}
+	if got.Query != "parse a vcard" {
+		t.Fatalf("the column's base cell owns step 0 wherever it sits, got %q", got.Query)
+	}
+	if !got.Matched {
+		t.Fatalf("the right step must actually have been searched: %+v", got)
+	}
+}
+
+// Every row of a grown column, based at row 1: rows 1..3 own steps 0..2 in
+// order. This is the shape a forked run produces after the layout change.
+func TestSearchStepAt_EveryRowOfARebasedColumnOwnsItsOwnStep(t *testing.T) {
+	queries := []string{"parse a vcard", "validate an iban", "render a qr code"}
+	fakeSearch(t, map[string][]map[string]string{
+		"parse a vcard":    {apiRow("ParseVCard", "christiangeorgelucas/vcard-tools", "0.1.2", "Parse a vCard.")},
+		"validate an iban": {apiRow("ValidateIban", "christiangeorgelucas/iban-tools", "0.2.0", "Validate an IBAN.")},
+		"render a qr code": {apiRow("EncodeQr", "christiangeorgelucas/barcode-tools", "0.3.0", "Render a QR code.")},
+	})
+	column := []axiom.ReflectionNode{
+		{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, GridCol: 2, GridRow: 0},
+		{InstanceID: 10, Name: "SearchStepAt", PackageName: selfPkg, GridCol: 3, GridRow: 1},
+		{InstanceID: 11, Name: "SearchStepAt", PackageName: selfPkg, GridCol: 3, GridRow: 2},
+		{InstanceID: 12, Name: "SearchStepAt", PackageName: selfPkg, GridCol: 3, GridRow: 3},
+	}
+	for i, inst := range []uint32{10, 11, 12} {
+		ax := &fanoutTestContext{
+			t:          t,
+			reflection: fanoutReflection{nodes: column, current: inst},
+			mutation:   &fanoutRecorder{},
+		}
+		out, err := nodes.SearchStepAt(context.Background(), ax, cellPlan(queries...))
+		if err != nil {
+			t.Fatalf("row %d: unexpected error: %v", i+1, err)
+		}
+		got := only(t, out)
+		if got.Row != int32(i)+1 {
+			t.Fatalf("cell %d reports the wrong canvas row: %d", i, got.Row)
+		}
+		if got.Query != queries[i] {
+			t.Fatalf("row %d (step %d) must search %q, got %q", i+1, i, queries[i], got.Query)
+		}
+		if got.Error != "" {
+			t.Fatalf("row %d: clean run must carry no error: %q", i+1, got.Error)
+		}
+	}
+}
