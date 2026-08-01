@@ -32,8 +32,13 @@ type assembleParams struct {
 	// has no fallback leg and passes nil.
 	fallback []*gen.StepCandidates
 	llmError string
-	// leadingErrors are attribution clauses raised BEFORE assembly (the
-	// fan-out path's per-cell anomalies); they lead the joined error field.
+	// planError is attribution raised UPSTREAM of the steps — a condition that
+	// changed the shape of the plan itself (the fan-out's TRUNCATED). It leads
+	// the joined error field: it is the most root-cause clause there is.
+	planError string
+	// leadingErrors are per-cell anomalies the fan-out path noticed while
+	// projecting cells onto steps. They TRAIL the root-cause clauses, and are
+	// dropped entirely when an upstream failure already explains an empty plan.
 	leadingErrors   []string
 	threshold       float64
 	maxAlternatives int32
@@ -66,9 +71,24 @@ func assemblePlanCore(p assembleParams) *gen.PlanResult {
 		return &gen.PlanResult{PlanBasis: "none", Error: "NO_INPUT", BridgeStatus: "unchecked"}
 	}
 
-	errParts := append([]string{}, p.leadingErrors...)
+	// Clause order is ROOT CAUSE FIRST: what reshaped the plan, then what
+	// failed upstream of it, then the consequences either of those had on
+	// individual cells. Reading the error field left to right should read as
+	// an explanation, not as a symptom list (R19 MINOR-3).
+	var errParts []string
+	if pe := strings.TrimSpace(p.planError); pe != "" {
+		errParts = append(errParts, pe)
+	}
+	llmClause := ""
 	if p.attributeLLMError && strings.TrimSpace(p.llmError) != "" {
-		errParts = append(errParts, "decompose: "+p.llmError)
+		llmClause = "decompose: " + p.llmError
+		errParts = append(errParts, llmClause)
+	}
+	// When the decomposition failed AND no cell owned a step, every per-cell
+	// clause is just "there were no queries" restated — the same reasoning
+	// that makes the blank-task verdict a bare NO_INPUT.
+	if llmClause == "" || len(p.primary) > 0 {
+		errParts = append(errParts, p.leadingErrors...)
 	}
 	noInput := func() *gen.PlanResult {
 		return &gen.PlanResult{

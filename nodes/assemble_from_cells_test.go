@@ -65,6 +65,81 @@ func TestAssembleFromCells_EquivalentToAssemblePlan(t *testing.T) {
 	}
 }
 
+// R19 MAJOR-1 regression, at the level the defect actually lived: run the SAME
+// queries through the WHOLE batch path (SearchSteps -> AssemblePlan) and the
+// WHOLE fan-out path (one SearchStepAt per canvas row -> AssembleFromCells)
+// against one fake catalog, at NON-DEFAULT max_alternatives. Coupling the
+// cell's search limit to the knob made these diverge: v3 listed
+// max_alternatives-1 runner-ups where the batch path lists
+// min(max_alternatives, defaultLimit-1), and max_alternatives=1 listed none.
+func TestFanOutPathMatchesBatchPath_AtNonDefaultMaxAlternatives(t *testing.T) {
+	queries := []string{"validate iban checksum", "parse a vcard contact"}
+	fakeSearch(t, map[string][]map[string]string{
+		"validate iban checksum": {
+			apiRow("ValidateIban", "h/iban-tools", "0.2.0", "Validate an IBAN's checksum and structure"),
+			apiRow("CheckIbanCountry", "h/iban-tools", "0.2.0", "Check an IBAN's country against an expected checksum-bearing code"),
+			apiRow("ValidateBic", "h/iban-tools", "0.2.0", "Validate a BIC structure"),
+			apiRow("IsQrIban", "h/iban-tools", "0.2.0", "Detect a QR-IBAN"),
+			apiRow("ComposeIban", "h/iban-tools", "0.2.0", "Compose an IBAN"),
+		},
+		"parse a vcard contact": {
+			apiRow("ParseVCard", "h/vcard-tools", "0.1.2", "Parse a vCard contact document"),
+			apiRow("ParseVCardList", "h/vcard-tools", "0.1.2", "Parse a list of vCard contacts"),
+			apiRow("FormatVCard", "h/vcard-tools", "0.1.2", "Format a vCard contact"),
+			apiRow("ExtractPhoto", "h/vcard-tools", "0.1.2", "Extract a vCard photo"),
+			apiRow("ListFields", "h/vcard-tools", "0.1.2", "List a vCard's fields"),
+		},
+	})
+
+	// 1 is the sharpest case: the pre-fix code returned ZERO alternatives.
+	for _, maxAlt := range []int32{1, 2, 10} {
+		batchSearch, err := nodes.SearchSteps(context.Background(), newTestContext(t), &gen.SearchStepsInput{Queries: queries})
+		if err != nil {
+			t.Fatalf("maxAlt=%d: %v", maxAlt, err)
+		}
+		batch, err := nodes.AssemblePlan(context.Background(), newTestContext(t), &gen.AssemblePlanInput{
+			Primary: batchSearch.GetSteps(), MaxAlternatives: maxAlt,
+		})
+		if err != nil {
+			t.Fatalf("maxAlt=%d: %v", maxAlt, err)
+		}
+
+		var cells []*gen.CellResult
+		var echo *gen.FanOutCell
+		for row := range queries {
+			out, err := nodes.SearchStepAt(context.Background(), cellAt(t, 3, int32(row)),
+				&gen.FanOutPlan{Queries: queries, FanoutCol: 3, MaxAlternatives: maxAlt})
+			if err != nil {
+				t.Fatalf("maxAlt=%d row=%d: %v", maxAlt, row, err)
+			}
+			echo = out
+			cells = append(cells, out.GetItems()...)
+		}
+		// The knob must not narrow the SEARCH — every cell still reports the
+		// full candidate depth, and only the assembled list is capped.
+		if n := len(cells[0].GetStep().GetCandidates()); n != 5 {
+			t.Fatalf("maxAlt=%d: the cell's search depth must be independent of the knob, got %d candidates", maxAlt, n)
+		}
+		fan, err := nodes.AssembleFromCells(context.Background(), newTestContext(t), &gen.FanInInput{
+			Cells: cells, MaxAlternatives: echo.GetMaxAlternatives(),
+		})
+		if err != nil {
+			t.Fatalf("maxAlt=%d: %v", maxAlt, err)
+		}
+
+		if !proto.Equal(batch, fan) {
+			t.Fatalf("maxAlt=%d: fan-out plan must equal the batch plan:\n batch=%+v\n fan  =%+v", maxAlt, batch, fan)
+		}
+		want := int(maxAlt)
+		if want > 4 {
+			want = 4 // defaultLimit - 1: the best pick is never its own alternative
+		}
+		if got := len(fan.GetSteps()[0].GetAlternatives()); got != want {
+			t.Fatalf("maxAlt=%d: want %d alternatives per step, got %d", maxAlt, want, got)
+		}
+	}
+}
+
 // The join collects members in edge order; the plan must depend on the cells'
 // declared ROW instead, so a shuffled arrival can never reorder the plan.
 func TestAssembleFromCells_SortsByRowNotArrivalOrder(t *testing.T) {
@@ -130,8 +205,11 @@ func TestAssembleFromCells_NoUsableCellsIsNoInputWithLLMAttribution(t *testing.T
 	if got.PlanBasis != "none" || got.Feasible || got.StepCount != 0 {
 		t.Fatalf("no usable cells must be a 'none' basis: %+v", got)
 	}
-	if !strings.Contains(got.Error, "decompose: anthropic: 529 overloaded") || !strings.HasSuffix(got.Error, "NO_INPUT") {
-		t.Fatalf("the LLM failure and NO_INPUT must both be attributed: %q", got.Error)
+	// R19 MINOR-3: root cause first, and the per-cell clause is dropped
+	// entirely — with no queries to own, "this cell owned no step" restates
+	// the decomposition failure rather than adding to it.
+	if got.Error != "decompose: anthropic: 529 overloaded; NO_INPUT" {
+		t.Fatalf("the LLM failure must LEAD, with the cell consequence dropped: %q", got.Error)
 	}
 	if got.BridgeStatus != "unchecked" {
 		t.Fatalf("bridge_status must be unchecked for CheckBridges to fill in: %q", got.BridgeStatus)
@@ -171,6 +249,33 @@ func TestAssembleFromCells_BlankTaskForcesNoInput(t *testing.T) {
 	}
 	if !proto.Equal(sync, got) {
 		t.Fatalf("blank-task verdicts must match the sync planner:\n sync=%+v\n fan =%+v", sync, got)
+	}
+}
+
+// R19 MINOR-2, consumer end: a plan truncated upstream of the cells must say
+// so, and must say it FIRST — the caller is holding a plan shorter than the
+// task decomposed to, which no per-step clause can convey.
+func TestAssembleFromCells_PlanErrorLeadsAndReachesTheCaller(t *testing.T) {
+	const trunc = "TRUNCATED: 20 steps exceed the fan-out cap of 16; planning the first 16"
+	got, err := nodes.AssembleFromCells(context.Background(), newTestContext(t), &gen.FanInInput{
+		Cells: []*gen.CellResult{
+			fanCell(0, "parse a vcard", cand("ParseVCard", "h/vcard-tools", "0.1.0", 1.0)),
+			{Row: 1, Col: 3, Query: "validate an iban", Step: &gen.StepCandidates{Query: "validate an iban", Error: "dial tcp: connection refused"}},
+		},
+		PlanError: trunc,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got.Error, trunc) {
+		t.Fatalf("the truncation must LEAD the plan's error: %q", got.Error)
+	}
+	if !strings.Contains(got.Error, "search: validate an iban: dial tcp") {
+		t.Fatalf("per-step clauses must still follow it: %q", got.Error)
+	}
+	// It is attribution, not a verdict: the steps that DID plan still count.
+	if got.StepCount != 2 || got.MatchedCount != 1 {
+		t.Fatalf("truncation must not disturb the assembled steps: %+v", got)
 	}
 }
 

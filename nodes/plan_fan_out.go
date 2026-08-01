@@ -66,7 +66,10 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 		return out, nil
 	}
 	if len(out.Queries) > maxFanout {
-		out.Error = fmt.Sprintf("TRUNCATED: %d steps exceed the fan-out cap of %d; planning the first %d", len(out.Queries), maxFanout, maxFanout)
+		// Shape-changing: the caller is about to read a plan SHORTER than the
+		// task decomposed to, so this clause must travel all the way out —
+		// appendPlanError puts it on the caller-visible channel too.
+		appendPlanError(out, fmt.Sprintf("TRUNCATED: %d steps exceed the fan-out cap of %d; planning the first %d", len(out.Queries), maxFanout, maxFanout))
 		out.Queries = out.Queries[:maxFanout]
 	}
 
@@ -109,18 +112,23 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 		return out, nil
 	}
 	out.FanoutCol = template.GridCol
+	// Row validity is checked BEFORE the grown guard: a column whose lowest
+	// cell is off row 0 is MIS-AUTHORED, and reporting it as ALREADY_GROWN
+	// would blame the lineage for an authoring fault (R19 MINOR-6). A genuinely
+	// grown lineage always has its authored cell at row 0, so this never
+	// shadows ALREADY_GROWN in practice.
+	if template.GridRow != 0 {
+		// Cells select their step by canvas row, so the authored cell must sit
+		// at row 0 or every step index would be shifted. Refuse loudly rather
+		// than plan a silently misaligned fan-out.
+		appendError(out, fmt.Sprintf("CELL_ROW_NOT_ZERO: the lowest authored %s cell sits at row %d; a fan-out column must start at row 0", cellNodeName, template.GridRow))
+		return out, nil
+	}
 	if cells > 1 {
 		// The idempotence guard: a grown lineage re-runs the emitter (the
 		// child resumes from it), and the column already holds every cell the
 		// plan needs. Report rather than append again.
 		appendError(out, fmt.Sprintf("ALREADY_GROWN: the fan-out column %d already holds %d cells; not appending again", out.FanoutCol, cells))
-		return out, nil
-	}
-	if template.GridRow != 0 {
-		// Cells select their step by canvas row, so the authored cell must sit
-		// at row 0 or every step index would be shifted. Refuse loudly rather
-		// than plan a silently misaligned fan-out.
-		appendError(out, fmt.Sprintf("CELL_ROW_NOT_ZERO: the authored %s cell sits at row %d; a fan-out column must start at row 0", cellNodeName, template.GridRow))
 		return out, nil
 	}
 
@@ -164,10 +172,27 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 
 // appendError joins attribution clauses with an explicit separator so
 // concatenated conditions ("TRUNCATED: ...; NO_GRAPH: ...") stay parseable.
+// This field is THIS NODE's full record; it has no route to the caller.
 func appendError(out *gen.FanOutPlan, clause string) {
 	if out.Error == "" {
 		out.Error = clause
 		return
 	}
 	out.Error = out.Error + "; " + clause
+}
+
+// appendPlanError records a clause on BOTH the node's own error and the
+// caller-visible plan_error channel. Reserved for conditions that change the
+// SHAPE of the plan the caller receives, so a short plan is never presented as
+// a complete one. Bookkeeping clauses (ALREADY_GROWN on every forked child,
+// NO_GRAPH on a direct invoke) deliberately stay on `error` only; the
+// structural guards (NO_CELL / NO_JOIN / CELL_ROW_NOT_ZERO) are authoring-time
+// faults that cannot arise in the authored flow, so they stay internal too.
+func appendPlanError(out *gen.FanOutPlan, clause string) {
+	appendError(out, clause)
+	if out.PlanError == "" {
+		out.PlanError = clause
+		return
+	}
+	out.PlanError = out.PlanError + "; " + clause
 }

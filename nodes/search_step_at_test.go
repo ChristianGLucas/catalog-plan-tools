@@ -77,6 +77,7 @@ func TestSearchStepAt_EchoesTheBroadcastKnobs(t *testing.T) {
 	p.MaxAlternatives = 2
 	p.LlmError = "anthropic: 529 overloaded"
 	p.TaskBlank = true
+	p.PlanError = "TRUNCATED: 20 steps exceed the fan-out cap of 16; planning the first 16"
 
 	out, err := nodes.SearchStepAt(context.Background(), ax, p)
 	if err != nil {
@@ -87,6 +88,9 @@ func TestSearchStepAt_EchoesTheBroadcastKnobs(t *testing.T) {
 	}
 	if out.GetLlmError() != "anthropic: 529 overloaded" || !out.GetTaskBlank() {
 		t.Fatalf("attribution knobs must be echoed for the join: %+v", out)
+	}
+	if out.GetPlanError() != "TRUNCATED: 20 steps exceed the fan-out cap of 16; planning the first 16" {
+		t.Fatalf("the caller-visible plan attribution must be echoed for the join: %+v", out)
 	}
 }
 

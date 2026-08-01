@@ -424,6 +424,77 @@ func TestPlanFanOut_CapTruncates(t *testing.T) {
 	if len(got.Queries) != 16 || got.Appended != 15 || len(ax.mutation.nodes) != 15 || !strings.HasPrefix(got.Error, "TRUNCATED") {
 		t.Fatalf("cap must truncate to 16 steps (15 appended) with attribution: appended=%d err=%q", got.Appended, got.Error)
 	}
+	// R19 MINOR-2: truncation changes the SHAPE of the plan the caller reads,
+	// so it must travel the caller-visible channel too — this node's own error
+	// field has no route out of the graph.
+	if !strings.HasPrefix(got.PlanError, "TRUNCATED") {
+		t.Fatalf("TRUNCATED must reach the caller via plan_error, got %q", got.PlanError)
+	}
+}
+
+// The counterpart to the above: bookkeeping clauses must NOT reach the caller.
+// ALREADY_GROWN fires on every forked child, so surfacing it would put noise in
+// the error field of every successful multi-step plan.
+func TestPlanFanOut_InternalClausesStayOffTheCallerChannel(t *testing.T) {
+	grown := &fanoutTestContext{
+		t: t,
+		reflection: plannerGraph(
+			[]axiom.ReflectionNode{
+				{InstanceID: 5, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 3, GridRow: 1},
+			},
+			[]axiom.ReflectionEdge{{SrcInstance: 1, DstInstance: 5}, {SrcInstance: 5, DstInstance: 3}},
+		),
+		mutation: &fanoutRecorder{},
+	}
+	got, err := nodes.PlanFanOut(context.Background(), grown, &gen.FanOutRequest{Queries: []string{"a b", "c d"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got.Error, "ALREADY_GROWN") || got.PlanError != "" {
+		t.Fatalf("ALREADY_GROWN must stay internal: error=%q plan_error=%q", got.Error, got.PlanError)
+	}
+
+	noGraph := &fanoutTestContext{t: t, reflection: fanoutReflection{}, mutation: &fanoutRecorder{}}
+	got2, err := nodes.PlanFanOut(context.Background(), noGraph, &gen.FanOutRequest{Queries: []string{"x y"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got2.Error, "NO_GRAPH") || got2.PlanError != "" {
+		t.Fatalf("NO_GRAPH must stay internal: error=%q plan_error=%q", got2.Error, got2.PlanError)
+	}
+}
+
+// R19 MINOR-6: a column whose lowest cell is off row 0 is MIS-AUTHORED. Before
+// the fix the grown guard ran first and blamed the lineage (ALREADY_GROWN) for
+// what is an authoring fault.
+func TestPlanFanOut_MisalignedColumnIsNotReportedAsAlreadyGrown(t *testing.T) {
+	ax := &fanoutTestContext{
+		t: t,
+		reflection: fanoutReflection{
+			nodes: []axiom.ReflectionNode{
+				{InstanceID: 1, Name: "PlanFanOut", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 2, GridRow: 0},
+				{InstanceID: 2, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 3, GridRow: 1},
+				{InstanceID: 5, Name: "SearchStepAt", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 3, GridRow: 2},
+				{InstanceID: 3, Name: "AssembleFromCells", PackageName: selfPkg, PackageVersion: "0.6.2", GridCol: 4, GridRow: 0},
+			},
+			edges: []axiom.ReflectionEdge{
+				{SrcInstance: 1, DstInstance: 2}, {SrcInstance: 2, DstInstance: 3},
+				{SrcInstance: 1, DstInstance: 5}, {SrcInstance: 5, DstInstance: 3},
+			},
+			current: 1,
+		},
+		mutation: &fanoutRecorder{},
+	}
+	got, err := nodes.PlanFanOut(context.Background(), ax, &gen.FanOutRequest{Queries: []string{"a b", "c d"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mutated || len(ax.mutation.nodes) != 0 {
+		t.Fatalf("a misaligned column must not be grown: %+v", got)
+	}
+	if !strings.HasPrefix(got.Error, "CELL_ROW_NOT_ZERO") {
+		t.Fatalf("misalignment must be attributed as CELL_ROW_NOT_ZERO, got %q", got.Error)
+	}
 }
 
 // The v0 phantom-plan guard: a blank task must refuse to fan out even when

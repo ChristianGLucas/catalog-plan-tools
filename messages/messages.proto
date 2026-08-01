@@ -104,6 +104,16 @@ message FanOutPlan {
   // so an edge from this node is the only way the task text reaches a node
   // downstream of the fork. Ignored by the cells.
   string task = 10;
+  // The subset of `error` the CALLER must see in the final plan. `error` is
+  // this node's own full attribution and has no route to the caller (the
+  // assemble join reads only cell edges), which is right for clauses that are
+  // internal bookkeeping: ALREADY_GROWN fires on every forked child, where
+  // reporting it would be pure noise. But a clause that changes the SHAPE of
+  // the plan the caller receives must not be swallowed — TRUNCATED silently
+  // cut a >maxFanout step list down to maxFanout and handed back a short plan
+  // presented as complete (R19 MINOR-2). Clauses put here ride the cells'
+  // echo into the join and lead the assembled plan's error field.
+  string plan_error = 11;
 }
 
 // What one fan-out cell produced: which row/step it owns and the scored
@@ -152,6 +162,9 @@ message FanOutCell {
   string llm_error = 4;
   // Whether the original task text was blank, echoed from the plan.
   bool task_blank = 5;
+  // The plan-level attribution the caller must see (FanOutPlan.plan_error),
+  // echoed for the same reason as the knobs: the join reads only cell edges.
+  string plan_error = 6;
 }
 
 // Input for AssembleFromCells: what the authored join collects from the fan-out
@@ -172,6 +185,11 @@ message FanInInput {
   // the "none"/NO_INPUT verdict even when cell results are present, for the
   // same phantom-plan reason as AssemblePlanInput.task_blank.
   bool task_blank = 5;
+  // Plan-level attribution raised upstream of the cells (today: TRUNCATED,
+  // when the step list exceeded the fan-out cap so the plan below is SHORTER
+  // than the task decomposed to). It LEADS the assembled plan's error field —
+  // a condition that changes the plan's shape must never be swallowed.
+  string plan_error = 6;
 }
 
 // One candidate node from the catalog, with a locally computed relevance score.

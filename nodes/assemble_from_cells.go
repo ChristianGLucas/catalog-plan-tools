@@ -9,7 +9,7 @@ import (
 	gen "christiangeorgelucas/catalog-plan-tools/gen"
 )
 
-// AssembleFromCells is the fan-in of the mutation-grown planner: it collects the per-step results of every SearchStepAt cell in the fan-out column and assembles them into the same build plan AssemblePlan produces from a batch search — best pick per step, matched verdict at the threshold (default 0.45), runner-up alternatives, and an explicit gap for every step the catalog cannot cover. Cells are sorted by their canvas row before assembly, so the order the join happened to collect them in never affects the plan. A cell that owns no step (the plan carried no queries, or its row fell outside the plan) contributes no phantom step; its attribution is carried in the error field instead. plan_basis is "decomposed" whenever at least one cell owned a step and "none" otherwise, and bridge_status is always "unchecked" — feed this result to CheckBridges to add per-pair type-bridge verdicts. Pure function of its input — no network, no secrets.
+// AssembleFromCells is the fan-in of the mutation-grown planner: it collects the per-step results of every SearchStepAt cell in the fan-out column and assembles them into the same build plan AssemblePlan produces from a batch search — best pick per step, matched verdict at the threshold (default 0.45), runner-up alternatives, and an explicit gap for every step the catalog cannot cover. Cells are sorted by their canvas row before assembly, so the order the join happened to collect them in never affects the plan. A cell that owns no step (the plan carried no queries, or its row fell outside the plan) contributes no phantom step; its attribution is carried in the error field instead. The error field reads root cause first: any plan-level condition that reshaped the plan upstream of the cells (a step list truncated at the fan-out cap), then an upstream decomposition failure, then the per-cell and per-step consequences. plan_basis is "decomposed" whenever at least one cell owned a step and "none" otherwise, and bridge_status is always "unchecked" — feed this result to CheckBridges to add per-pair type-bridge verdicts. Pure function of its input — no network, no secrets.
 func AssembleFromCells(ctx context.Context, ax axiom.Context, input *gen.FanInInput) (*gen.PlanResult, error) {
 	// Sort by canvas row: the join collects members in edge order, which the
 	// platform keeps in row order for a replicated fan-out column, but the
@@ -35,6 +35,7 @@ func AssembleFromCells(ctx context.Context, ax axiom.Context, input *gen.FanInIn
 	return assemblePlanCore(assembleParams{
 		primary:           steps,
 		llmError:          input.GetLlmError(),
+		planError:         input.GetPlanError(),
 		leadingErrors:     leading,
 		threshold:         input.GetThreshold(),
 		maxAlternatives:   input.GetMaxAlternatives(),
