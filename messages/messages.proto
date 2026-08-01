@@ -27,9 +27,15 @@ message SearchStepsInput {
   int32 limit = 4;
 }
 
-// Input for PlanFanOut: the decomposed steps to fan out over, plus placement
-// and search knobs forwarded to the appended cells.
+// Input for PlanFanOut: the decomposed steps to fan out over, plus the search
+// knobs forwarded to the cells.
 message FanOutRequest {
+  // The fan-out column is NOT a caller knob: PlanFanOut locates the flow's
+  // AUTHORED SearchStepAt cell by reflection and appends rows to ITS column.
+  // Field 4 held the removed fanout_col knob and is never reused.
+  reserved 4;
+  reserved "fanout_col";
+
   // One catalog query per step. Highest precedence.
   repeated string queries = 1;
   // Raw JSON (or LLM text containing JSON) holding the queries — same
@@ -37,9 +43,6 @@ message FanOutRequest {
   string queries_json = 2;
   // A single query, used only when queries and queries_json are empty.
   string query = 3;
-  // The dedicated canvas column the appended search cells are placed in,
-  // one row per step (row k searches step k). 0 resolves to column 4.
-  int32 fanout_col = 4;
   // Forwarded to every cell: max runner-up candidates per step. 0 -> 5.
   int32 max_alternatives = 5;
   // Forwarded to every cell: minimum score to count the step matched. 0 -> 0.45.
@@ -54,21 +57,23 @@ message FanOutRequest {
   string llm_error = 8;
 }
 
-// Output of PlanFanOut AND the input every appended search cell receives over
-// its mutation-added edge (added edges carry no adapters, so the whole plan is
-// broadcast; each cell picks its own step by reading its canvas row via
-// reflection). FROZEN WIRE ABI: plan-fanout-cell's FanOutPlan mirrors this
-// message byte-for-byte, and the platform's mutation-edge validator compares
-// bare message names only (no field-level check) — NEVER change a field
-// number or type here without republishing BOTH packages in lockstep and
-// bumping the emitter's pinned cell version.
+// Output of PlanFanOut AND the input every search cell receives — the
+// AUTHORED cell over the flow's authored edge, and each appended cell over the
+// mutation-added edge that replicates it. Added edges carry no adapters, so
+// the whole plan is broadcast and each cell picks its own step by reading its
+// canvas row via reflection. Field numbers are additive-only: a mutation-added
+// edge is type-checked by message identity, and older running graphs may still
+// carry a plan encoded by an earlier version of this package.
 message FanOutPlan {
   // One query per decomposed step; the cell at fan-out row k searches queries[k].
   repeated string queries = 1;
-  // The dedicated canvas column the cells were placed in.
+  // The canvas column the search cells occupy — DISCOVERED by reflection from
+  // the flow's authored cell, not chosen by the caller. 0 when this invocation
+  // found no graph (direct invoke).
   int32 fanout_col = 2;
-  // How many cells THIS invocation appended (0 when the fan-out column was
-  // already populated — the idempotence guard — or when there was nothing to plan).
+  // How many cells THIS invocation appended (0 when the plan has a single step
+  // — the authored cell already fits — or when the lineage was already grown,
+  // or when there was nothing to plan).
   int32 appended = 3;
   // True when this invocation emitted the mutation batch that grows the graph.
   bool mutated = 4;
@@ -77,6 +82,83 @@ message FanOutPlan {
   // Search knobs forwarded to every cell.
   int32 max_alternatives = 6;
   double threshold = 7;
+  // The upstream LLM's error field, forwarded verbatim ("" when decomposition
+  // succeeded). Rides the plan into every cell so the join's assemble step can
+  // attribute a degraded plan honestly — the assemble node's ONLY inbound
+  // edges are cell edges, so every knob it needs must travel this way.
+  string llm_error = 8;
+  // True when the original task text was blank. Rides the plan into every cell
+  // for the same reason as llm_error. PlanFanOut itself refuses to fan out in
+  // this case, so a cell only ever sees it true on a non-mutating run.
+  bool task_blank = 9;
+}
+
+// What one fan-out cell produced: which row/step it owns and the scored
+// catalog candidates for that step.
+message CellResult {
+  // The fan-out row this cell occupies — also the index of its step. When the
+  // node runs outside a flow (direct invoke) there is no canvas position and
+  // the cell defaults to row 0, noted in error.
+  int32 row = 1;
+  // The canvas column this cell landed in (the fan-out column; 0 outside a flow).
+  int32 col = 2;
+  // queries[row], the step this cell searched. "" when row was out of range.
+  string query = 3;
+  // True when the best candidate cleared the threshold (default 0.45).
+  bool matched = 4;
+  // The best candidate's score, reported even below the threshold (0 when
+  // there were no candidates).
+  double score = 5;
+  // The search results for this step.
+  StepCandidates step = 6;
+  // Empty on success. "ROW_OUT_OF_RANGE: ..." when the cell's row has no step
+  // (row >= number of queries); "NO_QUERY" when the plan carried no queries at
+  // all; "NO_GRAPH: ..." (informational, search still runs against row 0) when
+  // invoked outside a flow. Search transport failures appear on step.error.
+  string error = 7;
+}
+
+// Output of SearchStepAt: one cell's contribution to the fan-in, wrapped so a
+// join over the cell column collects members with a plain repeated-field pick
+// (mutation-replicated member edges append their element in row order). The
+// scalar fields are the broadcast knobs echoed back out of the plan: the
+// assemble node's only inbound edges are cell edges, so this echo is how
+// threshold / max_alternatives / llm_error / task_blank reach it. The compose
+// plan takes them as SINGULAR picks off the AUTHORED cell edge, which
+// mutation does not replicate — so the authored cell's echo is the one that
+// lands, and every cell echoes the same broadcast values anyway.
+message FanOutCell {
+  // Always exactly one element: this cell's result.
+  repeated CellResult items = 1;
+  // Minimum score to count a step matched, echoed from the plan (0 = default).
+  double threshold = 2;
+  // Max runner-up refs per step, echoed from the plan (0 = default).
+  int32 max_alternatives = 3;
+  // The upstream LLM's error, echoed from the plan ("" when decomposition
+  // succeeded).
+  string llm_error = 4;
+  // Whether the original task text was blank, echoed from the plan.
+  bool task_blank = 5;
+}
+
+// Input for AssembleFromCells: what the authored join collects from the fan-out
+// column. cells grows to one element per cell as the join collects every member
+// edge; the scalars come from the authored cell's edge (singular picks).
+message FanInInput {
+  // One entry per fan-out cell, in join-collection order. AssembleFromCells
+  // sorts by row before assembling, so arrival order never matters.
+  repeated CellResult cells = 1;
+  // The upstream LLM's error field, forwarded verbatim ("" when decomposition
+  // succeeded). Surfaces in PlanResult.error as "decompose: <detail>".
+  string llm_error = 2;
+  // Minimum candidate score to count a step as matched. 0 means the default of 0.45.
+  double threshold = 3;
+  // Max runner-up node refs per step in alternatives. 0 means the default of 3.
+  int32 max_alternatives = 4;
+  // Set true by a caller who KNOWS the original task text was blank — forces
+  // the "none"/NO_INPUT verdict even when cell results are present, for the
+  // same phantom-plan reason as AssemblePlanInput.task_blank.
+  bool task_blank = 5;
 }
 
 // One candidate node from the catalog, with a locally computed relevance score.

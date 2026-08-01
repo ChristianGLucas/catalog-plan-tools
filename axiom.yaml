@@ -1,5 +1,5 @@
 name: christiangeorgelucas/catalog-plan-tools
-version: 0.5.2
+version: 0.6.0
 language: go
 nodes:
     - name: SearchSteps
@@ -15,3 +15,9 @@ nodes:
       input: FanOutRequest
       output: FanOutPlan
       mutation_capable: true
+    - name: SearchStepAt
+      input: FanOutPlan
+      output: FanOutCell
+    - name: AssembleFromCells
+      input: FanInInput
+      output: PlanResult
