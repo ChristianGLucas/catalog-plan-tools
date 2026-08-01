@@ -123,7 +123,7 @@ func TestPlanFanOut_GuardOnPopulatedColumn(t *testing.T) {
 	ax := &fanoutTestContext{
 		t: t,
 		reflection: fanoutGraph(1,
-			axiom.ReflectionNode{InstanceID: 2, Name: "SearchStepAt", GridCol: 4, GridRow: 0},
+			axiom.ReflectionNode{InstanceID: 2, Name: "SearchStepAt", PackageName: "christiangeorgelucas/plan-fanout-cell", GridCol: 4, GridRow: 0},
 		),
 		mutation: &fanoutRecorder{},
 	}
@@ -133,6 +133,56 @@ func TestPlanFanOut_GuardOnPopulatedColumn(t *testing.T) {
 	}
 	if got.Mutated || got.Appended != 0 || len(ax.mutation.nodes) != 0 {
 		t.Fatalf("guard failed: %+v (added %d)", got, len(ax.mutation.nodes))
+	}
+	if !strings.HasPrefix(got.Error, "ALREADY_GROWN") {
+		t.Fatalf("the guard no-op must be attributed, got error %q", got.Error)
+	}
+}
+
+// R18 CRITICAL regression: a fanout_col that collides with an AUTHORED node's
+// column must refuse loudly, never silently no-op (pre-fix: byte-identical
+// output to a legitimate re-run, live-reproduced with fanout_col 1 and 2).
+func TestPlanFanOut_AuthoredColumnCollisionRefusesLoudly(t *testing.T) {
+	for _, col := range []int32{1, 2} {
+		ax := &fanoutTestContext{t: t, reflection: fanoutGraph(1), mutation: &fanoutRecorder{}}
+		got, err := nodes.PlanFanOut(context.Background(), ax,
+			&gen.FanOutRequest{Queries: []string{"parse a vcard", "validate an iban"}, FanoutCol: col})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.Mutated || len(ax.mutation.nodes) != 0 {
+			t.Fatalf("col %d: must not mutate into an authored column: %+v", col, got)
+		}
+		if !strings.HasPrefix(got.Error, "FANOUT_COL_OCCUPIED") || !strings.Contains(got.Error, "fanout_col") {
+			t.Fatalf("col %d: collision must be loudly attributed, got %q", col, got.Error)
+		}
+	}
+}
+
+// R18 MINOR regressions: multi-clause errors join with "; ", and an upstream
+// LLM failure is attributed on the NO_QUERY path.
+func TestPlanFanOut_ErrorSeparatorAndLLMAttribution(t *testing.T) {
+	qs := make([]string, 20)
+	for i := range qs {
+		qs[i] = "q"
+	}
+	ax := &fanoutTestContext{t: t, reflection: fanoutReflection{}, mutation: &fanoutRecorder{}}
+	got, err := nodes.PlanFanOut(context.Background(), ax, &gen.FanOutRequest{Queries: qs})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got.Error, "; NO_GRAPH") || !strings.HasPrefix(got.Error, "TRUNCATED") {
+		t.Fatalf("clauses must join with '; ': %q", got.Error)
+	}
+
+	ax2 := &fanoutTestContext{t: t, reflection: fanoutGraph(1), mutation: &fanoutRecorder{}}
+	got2, err := nodes.PlanFanOut(context.Background(), ax2,
+		&gen.FanOutRequest{QueriesJson: "the model was unavailable", LlmError: "anthropic: 529 overloaded"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got2.Error, "decompose: anthropic: 529 overloaded; NO_QUERY") {
+		t.Fatalf("LLM failure must be attributed: %q", got2.Error)
 	}
 }
 

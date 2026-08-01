@@ -48,13 +48,20 @@ message FanOutRequest {
   // to fan out even when an upstream LLM invented steps for the empty task
   // (the phantom-plan defect class found live in v0 of the sync planner).
   bool task_blank = 7;
+  // The upstream LLM's error field, forwarded verbatim ("" when decomposition
+  // succeeded). Surfaces in FanOutPlan.error as "decompose: <detail>" when the
+  // step list is unusable, so a transient LLM failure is attributed honestly.
+  string llm_error = 8;
 }
 
 // Output of PlanFanOut AND the input every appended search cell receives over
 // its mutation-added edge (added edges carry no adapters, so the whole plan is
 // broadcast; each cell picks its own step by reading its canvas row via
-// reflection). Field numbers and types are mirrored byte-for-byte by
-// plan-fanout-cell's FanOutPlan — keep the two in sync.
+// reflection). FROZEN WIRE ABI: plan-fanout-cell's FanOutPlan mirrors this
+// message byte-for-byte, and the platform's mutation-edge validator compares
+// bare message names only (no field-level check) — NEVER change a field
+// number or type here without republishing BOTH packages in lockstep and
+// bumping the emitter's pinned cell version.
 message FanOutPlan {
   // One query per decomposed step; the cell at fan-out row k searches queries[k].
   repeated string queries = 1;

@@ -67,6 +67,9 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 		qs, err := parseQueriesJSON(input.GetQueriesJson())
 		if err != nil {
 			out.Error = "NO_QUERY: " + err.Error()
+			if le := strings.TrimSpace(input.GetLlmError()); le != "" {
+				out.Error = "decompose: " + le + "; " + out.Error
+			}
 			return out, nil
 		}
 		out.Queries = qs
@@ -75,6 +78,9 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 	}
 	if len(out.Queries) == 0 {
 		out.Error = "NO_QUERY: no usable query in queries, queries_json, or query"
+		if le := strings.TrimSpace(input.GetLlmError()); le != "" {
+			out.Error = "decompose: " + le + "; " + out.Error
+		}
 		return out, nil
 	}
 	if len(out.Queries) > maxFanout {
@@ -87,16 +93,32 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 	if len(nodes) == 0 {
 		// Standalone direct-invoke: no running graph to grow. Report the
 		// parsed plan so the node stays testable outside a flow.
-		out.Error = strings.TrimSpace(out.Error + " NO_GRAPH: not running inside a flow; nothing appended")
+		appendError(out, "NO_GRAPH: not running inside a flow; nothing appended")
 		return out, nil
 	}
+	// Two distinct occupancy cases, both attributed so a caller can always
+	// tell WHY nothing was appended:
+	//  - the column already holds appended cells → an already-grown lineage;
+	//    the idempotence guard holds and says so (ALREADY_GROWN, not a fault);
+	//  - the column holds an AUTHORED node → the caller picked a column the
+	//    flow itself occupies; appending would silently no-op or overlap, so
+	//    refuse loudly (FANOUT_COL_OCCUPIED) instead. Keying the guard on the
+	//    cell package (not bare column equality) is what separates the two.
+	cells := 0
 	for _, n := range nodes {
-		if n.GridCol == out.FanoutCol {
-			out.Appended = 0
-			// Idempotence guard: the fan-out column is already populated —
-			// this is a re-run on an already-grown lineage. Never append twice.
-			return out, nil
+		if n.GridCol != out.FanoutCol {
+			continue
 		}
+		if n.PackageName == cellPackage {
+			cells++
+			continue
+		}
+		appendError(out, fmt.Sprintf("FANOUT_COL_OCCUPIED: column %d already holds flow node %q at row %d; pick a different fanout_col", out.FanoutCol, n.Name, n.GridRow))
+		return out, nil
+	}
+	if cells > 0 {
+		appendError(out, fmt.Sprintf("ALREADY_GROWN: fan-out column %d already holds %d cells; not appending again", out.FanoutCol, cells))
+		return out, nil
 	}
 
 	self := fr.Position().CurrentInstance
@@ -108,4 +130,14 @@ func PlanFanOut(ctx context.Context, ax axiom.Context, input *gen.FanOutRequest)
 	out.Mutated = true
 	out.Appended = int32(len(out.Queries))
 	return out, nil
+}
+
+// appendError joins attribution clauses with an explicit separator so
+// concatenated conditions ("TRUNCATED: ...; NO_GRAPH: ...") stay parseable.
+func appendError(out *gen.FanOutPlan, clause string) {
+	if out.Error == "" {
+		out.Error = clause
+		return
+	}
+	out.Error = out.Error + "; " + clause
 }
