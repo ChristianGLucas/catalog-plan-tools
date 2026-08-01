@@ -55,6 +55,7 @@ var stopwords = map[string]bool{
 // pharmaceutical packaging node at 0.67 purely on "details"+"code". Keys are
 // the SINGULAR forms (tokenize strips a plural "s" before lookup).
 var genericTokens = map[string]bool{
+	// data-shape / glue nouns
 	"detail": true, "code": true, "data": true, "info": true,
 	"information": true, "value": true, "item": true, "record": true,
 	"entry": true, "list": true, "text": true, "number": true,
@@ -69,6 +70,21 @@ var genericTokens = map[string]bool{
 	"plain": true, "simple": true, "common": true, "standard": true,
 	"custom": true, "general": true, "specific": true, "single": true,
 	"multiple": true, "current": true, "new": true, "full": true,
+	"document": true, "schema": true, "message": true, "payload": true,
+	"structure": true, "collection": true, "array": true, "body": true,
+	"report": true, "summary": true, "request": true, "response": true,
+	// capability verbs — near-universal across the catalog (R15 MAJOR:
+	// "parse an XML document and validate its schema" matched a JSON-only
+	// node at 0.8 purely on parse+document+validate+schema)
+	"parse": true, "validate": true, "convert": true, "extract": true,
+	"generate": true, "compute": true, "check": true, "verify": true,
+	"resolve": true, "fetch": true, "read": true, "load": true,
+	"transform": true, "normalize": true, "render": true, "encode": true,
+	"decode": true, "serialize": true, "deserialize": true, "merge": true,
+	"split": true, "filter": true, "sort": true, "count": true,
+	"compare": true, "process": true, "analyze": true, "search": true,
+	"query": true, "update": true, "create": true, "build": true,
+	"add": true, "remove": true, "delete": true, "apply": true,
 }
 
 // genericWeight is what a generic token contributes relative to a
@@ -179,17 +195,35 @@ func scoreCandidate(queryToks []string, n apiNode) float64 {
 		candToks[t] = true
 	}
 	var hit, total float64
+	hasSpecific, specificMatched := false, false
 	for _, qt := range queryToks {
 		w := tokenWeight(qt)
 		total += w
+		if w == 1.0 {
+			hasSpecific = true
+		}
 		if candToks[qt] {
 			hit += w
+			if w == 1.0 {
+				specificMatched = true
+			}
 		}
 	}
 	if total == 0 {
 		return 0
 	}
-	return hit / total
+	score := hit / total
+	// Structural guarantee behind the "generic overlap alone cannot carry a
+	// match" claim: when the query names at least one domain-specific word
+	// and this candidate matched NONE of them, halve the score. A weighted
+	// fraction alone still clears 0.45 for verb-heavy queries ("parse an XML
+	// document and validate its schema" has four generic words to one
+	// specific), because many small weights add up; the halving makes the
+	// generic-only ceiling ~0.29 for realistic query lengths.
+	if hasSpecific && !specificMatched {
+		score *= 0.5
+	}
+	return score
 }
 
 // searchOneQuery runs the full-phrase search, relaxes to per-keyword searches

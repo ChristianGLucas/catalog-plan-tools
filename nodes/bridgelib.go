@@ -121,7 +121,11 @@ var carrierTier = func() map[string]int {
 // mentions an IBAN the field does not carry (a second live false positive) —
 // so producer leaves earn carriers by field NAME only.
 func classifyCarriers(name, jtype, desc string, allowDesc bool) []string {
-	name = strings.ToLower(name)
+	// Real published packages use camelCase field names (worldbank's
+	// iso2Code, http nodes' downloadUrl); the carrier name patterns are
+	// written against snake_case word boundaries, so normalize camelCase to
+	// snake_case before matching (R15 review finding).
+	name = strings.ReplaceAll(strings.ToLower(camelBoundary(name)), " ", "_")
 	desc = strings.ToLower(desc)
 	var out []string
 	for _, d := range carrierDefs {

@@ -94,6 +94,11 @@ func TestClassifyCarriers(t *testing.T) {
 	if cs := classifyCarriers("actual_country_code", "string", "The country code extracted from the IBAN, reported even if the IBAN fails validation.", false); len(cs) != 1 || cs[0] != "country_code" {
 		t.Errorf("producer desc mention must not award iban, got %v", cs)
 	}
+	// camelCase field names in real published packages must hit the
+	// snake_case name patterns (R15 review MINOR).
+	if cs := classifyCarriers("downloadUrl", "string", "", false); len(cs) == 0 || cs[0] != "url" {
+		t.Errorf("camelCase name must earn url carrier, got %v", cs)
+	}
 }
 
 func TestJudgeBridge_TypeGates(t *testing.T) {

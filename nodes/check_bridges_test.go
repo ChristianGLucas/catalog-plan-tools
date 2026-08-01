@@ -239,6 +239,62 @@ func TestScoreCandidate_GenericWordsCannotCarryAMatch(t *testing.T) {
 		Description: "Validates an IBAN's checksum and structure.",
 	}
 	if s := nodes.ScoreCandidate(nodes.Tokenize("validate iban checksum"), iban); s != 1.0 {
-		t.Errorf("all-specific full match must stay 1.0, got %.3f", s)
+		t.Errorf("full match must stay 1.0, got %.3f", s)
+	}
+}
+
+// R15 review MAJOR: capability verbs and shape nouns are near-universal in
+// the catalog, so a query like "parse an XML document and validate its
+// schema" matched a JSON-only node at 0.8 on parse+document+validate+schema
+// overlap while "xml" — the only domain word — went unmatched. The verb/noun
+// weights plus the no-domain-word-matched halving must keep such candidates
+// below the 0.45 threshold, while a candidate that DOES name the domain word
+// still clears it.
+func TestScoreCandidate_VerbOverlapCannotCarryAMatch(t *testing.T) {
+	q := nodes.Tokenize("parse an XML document and validate its schema")
+
+	// Live-captured candidate that scored 0.8 for this query pre-fix.
+	openrpc := nodes.APINode{
+		NodeName:    "ParseDocument",
+		PackageName: "christiangeorgelucas/openrpc-tools",
+		Version:     "0.1.1",
+		Description: `Lightweight structural parse of an OpenRPC document: confirms the JSON text parses and has the minimum OpenRPC shape (an "openrpc" version string, an "info" object, and a "methods" array), and reports top-level counts (methods, components.schemas, servers). Does not check every method or schema against the full OpenRPC meta-schema — use ValidateDocument for that. Malformed or oversized input returns valid=false with a structured error instead of throwing.`,
+	}
+	if s := nodes.ScoreCandidate(q, openrpc); s >= 0.45 {
+		t.Errorf("verb/shape-noun overlap without the domain word must stay below threshold, got %.3f", s)
+	}
+
+	// A candidate that names the domain word clears the threshold even
+	// without matching every verb.
+	xmlNode := nodes.APINode{
+		NodeName:    "ValidateXml",
+		PackageName: "h/xml-tools",
+		Version:     "1.0.0",
+		Description: "Validates an XML document's well-formedness and checks it against a schema.",
+	}
+	if s := nodes.ScoreCandidate(q, xmlNode); s < 0.45 {
+		t.Errorf("domain-word candidate must clear threshold, got %.3f", s)
+	}
+
+	// R15 repro 3: "convert a temperature value" — a candidate matching only
+	// convert+value must be sub-threshold; one naming temperature clears.
+	q2 := nodes.Tokenize("convert a temperature value")
+	ion := nodes.APINode{
+		NodeName:    "ConvertText",
+		PackageName: "h/ion-tools",
+		Version:     "1.0.0",
+		Description: "Converts an Ion value between binary and text encodings.",
+	}
+	if s := nodes.ScoreCandidate(q2, ion); s >= 0.45 {
+		t.Errorf("convert+value overlap must stay below threshold, got %.3f", s)
+	}
+	climate := nodes.APINode{
+		NodeName:    "ConvertTemperature",
+		PackageName: "h/units-tools",
+		Version:     "1.0.0",
+		Description: "Converts a temperature value between celsius, fahrenheit, and kelvin.",
+	}
+	if s := nodes.ScoreCandidate(q2, climate); s < 0.45 {
+		t.Errorf("temperature candidate must clear threshold, got %.3f", s)
 	}
 }
